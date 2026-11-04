@@ -175,7 +175,7 @@ final class CaptureModel: NSObject, ObservableObject, URLSessionDelegate, AVCapt
         var pointer: UnsafeMutablePointer<Int8>?
         guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &pointer) == noErr,
               let pointer else { return nil }
-        var nalLength = 4
+        var nalLength: Int32 = 4
         var out = Data()
         if let format = CMSampleBufferGetFormatDescription(sample),
            (CMGetAttachment(sample, key: kCMSampleAttachmentKey_NotSync, attachmentModeOut: nil) as? Bool) != true {
@@ -194,13 +194,14 @@ final class CaptureModel: NSObject, ObservableObject, URLSessionDelegate, AVCapt
                 }
             }
         }
+        let headerLength = Int(nalLength)
         var offset = 0
-        while offset + nalLength <= length {
+        while offset + headerLength <= length {
             var size = 0
-            for byte in 0..<nalLength {
+            for byte in 0..<headerLength {
                 size = (size << 8) | Int(UInt8(bitPattern: pointer[offset + byte]))
             }
-            offset += nalLength
+            offset += headerLength
             if size <= 0 || offset + size > length { break }
             out.append(contentsOf: [0, 0, 0, 1])
             out.append(Data(bytes: pointer + offset, count: size))
