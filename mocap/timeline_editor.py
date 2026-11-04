@@ -19,7 +19,8 @@ class TimelineSlider(FootLockEditor,QSlider):
 
     def __init__(self, orientation=Qt.Horizontal, parent=None):
         super().__init__(orientation, parent)
-        self.setMinimumHeight(190)
+        self.setMinimumHeight(242)
+        self.face_span=None;self.audio_span=None
         self.init_contacts()
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -207,7 +208,7 @@ class TimelineSlider(FootLockEditor,QSlider):
     def paintEvent(self, _):
         key = (self.size(), self.devicePixelRatioF(), self.minimum(), self.maximum(), self.view_start,
                self.span(), self.fps, self.has_motion, self.clip_in, self.clip_out,self.contact_revision,self.contact_edit_enabled,self.contact_track_enabled,
-               self.person_color,self.person_name,
+               self.person_color,self.person_name,self.face_span,self.audio_span,
                (self._foot_drag['foot'],self._foot_drag['index']) if self._foot_drag else None,self._selected_contact)
         if key != self._cache_key:
             ratio = self.devicePixelRatioF()
@@ -232,6 +233,7 @@ class TimelineSlider(FootLockEditor,QSlider):
                 left, right = max(self.LEFT, left), min(self.width() - self.RIGHT, right)
                 p.fillRect(QRectF(left, y + 2, max(0, right - left), row_height - 5), tint)
             self.paint_contact_tracks(p)
+            self.paint_face_tracks(p)
             # Draw the time grid above the translucent tracks. The visible tick
             # count remains bounded by viewport width, independent of duration.
             p.save()
@@ -286,3 +288,23 @@ class TimelineSlider(FootLockEditor,QSlider):
         p.drawPolygon(QPolygonF([QPointF(x - 4, 21), QPointF(x + 4, 21), QPointF(x, 26)]))
         p.setPen(QColor("#ffffff"))
         p.drawText(head, Qt.AlignCenter, text)
+
+    def paint_face_tracks(self,p):
+        fps=self.fps or 30.0
+        extras=((6,'Face','#c4a36a',self.face_span,'No face capture'),
+                (7,'Audio','#8a7bb8',self.audio_span,'No audio'))
+        for row,label,color,span,empty in extras:
+            y=28+row*self.TRACK_HEIGHT
+            p.setPen(QColor('#aaaaaa'))
+            p.drawText(QRectF(8,y,53,self.TRACK_HEIGHT),Qt.AlignVCenter,label)
+            if not span:
+                p.setPen(QColor('#777777'))
+                p.drawText(QRectF(self.LEFT+8,y,max(0,self.width()-self.LEFT-25),self.TRACK_HEIGHT),Qt.AlignVCenter,empty)
+                continue
+            start,duration=span
+            left=max(self.LEFT,self.frame_x(start*fps))
+            right=min(self.width()-self.RIGHT,self.frame_x((start+duration)*fps))
+            tint=QColor(color);tint.setAlpha(90)
+            p.fillRect(QRectF(left,y+2,max(0,right-left),self.TRACK_HEIGHT-5),tint)
+            p.setPen(QColor('#d5c7a6' if row==6 else '#c8bddc'))
+            p.drawText(QRectF(left+12,y,max(0,right-left-24),self.TRACK_HEIGHT),Qt.AlignVCenter,'%.1f s'%duration)

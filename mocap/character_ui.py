@@ -320,13 +320,35 @@ class CharacterWorkspace:
             self.motion_view._camera_initialized=True
         self.motion_view.update()
 
+    def _gaze_on_eyes(self, matrix, eyes):
+        gaze = self.face_look() if hasattr(self, 'face_look') else None
+        if not gaze or not any(abs(v) > 1e-4 for v in gaze):
+            return matrix
+        up, down, left, right = gaze
+        yaw = (left-right)*.45
+        pitch = (down-up)*.35
+        cy, sy = np.cos(yaw), np.sin(yaw)
+        cp, sp = np.cos(pitch), np.sin(pitch)
+        local = np.eye(4, dtype=np.float32)
+        local[0, 0], local[0, 1], local[0, 2] = cy, sy*sp, sy*cp
+        local[1, 1], local[1, 2] = cp, -sp
+        local[2, 0], local[2, 1], local[2, 2] = -sy, cy*sp, cy*cp
+        out = np.array(matrix, np.float32, copy=True)
+        for side in ('left', 'right'):
+            index = eyes.get(side)
+            if isinstance(index, int) and 0 <= index < len(out):
+                out[index] = out[index] @ local
+        return out
+
     def character_draws(self):
         from bisect import bisect_right
         time_=self.motion_view.scene_time
+        # No body motion yet: keep every imported character in its rest pose so live face has a mesh.
+        rest_only=self.motion_view.joints is None
         for c in self.characters:
             if not c.get('visible',True):continue
             path=self.character_path(c['asset']);frame=0;transform=None
-            if c.get('takes'):
+            if c.get('takes') and not rest_only:
                 starts=c.setdefault('_starts',[t['start'] for t in c['takes']])
                 i=bisect_right(starts,time_)-1
                 take=c['takes'][i] if i>=0 else None
@@ -337,4 +359,7 @@ class CharacterWorkspace:
             if not data:
                 self.character_loader.request(path,frame,self.character_path(c['asset']));continue
             matrix=self.character_loader.frame(path,frame)
-            if matrix is not None:yield c,data,matrix,frame,transform
+            if matrix is None:continue
+            eyes=(data.get('asset') or {}).get('textures',{}).get('eyes')
+            if eyes:matrix=self._gaze_on_eyes(matrix,eyes)
+            yield c,data,matrix,frame,transform

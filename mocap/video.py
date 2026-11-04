@@ -139,6 +139,7 @@ def prepare(source: Path, start: float = 0.0, end: float | None = None, motion_t
         from .motion_tools import require_supported_project
         if require_supported_project(root).key != motion_tool:
             raise ValueError('The existing project belongs to a different motion model. Prepare a new project.')
+    attach_session_face(source, saved_root)
     if video.exists() and manifest_path.exists():
         ensure_preview(root, cancelled)
         workspace.set_active(saved_root,motion_tool,root)
@@ -162,6 +163,14 @@ def prepare(source: Path, start: float = 0.0, end: float | None = None, motion_t
     ensure_preview(root, cancelled)
     workspace.set_active(saved_root,motion_tool,root)
     return root
+
+
+def attach_session_face(source: Path, saved_root: Path) -> None:
+    """Keep a live session's face and audio beside the body project."""
+    source_face = Path(source).resolve().parent / 'face_capture'
+    dest = Path(saved_root) / 'face_capture'
+    if (source_face / 'meta.json').is_file() and not (dest / 'meta.json').is_file():
+        shutil.copytree(source_face, dest)
 
 
 def prepare_people_clip(project: Path, first: int, end: int) -> Path:

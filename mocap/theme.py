@@ -9,6 +9,9 @@ QMainWindow,QDialog { background:#252525; }
 QLabel#brand { font-size:13px; font-weight:600; color:#ededed; padding:0 8px; }
 QLabel#muted { color:#a0a0a0; }
 QLabel#status { color:#b8b8b8; padding:3px 6px; }
+QLabel#faceUrl, QLineEdit#faceUrl { color:#d5c7a6; font-weight:600; background:#3a3428; border:1px solid #5a4f3a; }
+QLabel#faceLiveTitle { color:#f0e6cc; font-weight:600; }
+QFrame#faceLive { background:rgba(28,28,28,230); border:1px solid #4a4334; border-radius:4px; }
 QLabel#taskInfo { color:#b9d9ff; padding:3px 6px; }
 QFrame#editor { background:#303030; border:1px solid #191919; }
 QWidget#editorHeader { background:#292929; border-bottom:1px solid #191919; }

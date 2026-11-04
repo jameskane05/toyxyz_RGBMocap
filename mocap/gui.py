@@ -319,8 +319,10 @@ class ModelsDialog(QDialog):
 
 
 from .character_ui import CharacterWorkspace
+from .face_ui import FaceWorkspace
+from .session_ui import SessionWorkspace
 
-class MainWindow(CharacterWorkspace,ModelWorkspace,ProjectSaving,PeopleWorkspace,QMainWindow):
+class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspace,ProjectSaving,PeopleWorkspace,QMainWindow):
     def __init__(self, video: Path | None = None):
         super().__init__()
         self.setWindowTitle("RGB MoCap | Motion Workspace")
@@ -371,6 +373,8 @@ class MainWindow(CharacterWorkspace,ModelWorkspace,ProjectSaving,PeopleWorkspace
         self.data_loader.tracked_actor_ready.connect(self.tracked_actor_ready)
         build_workspace(self)
         self.init_characters()
+        self.init_face()
+        self.init_session()
         self.timer = QTimer(self)
         self.timer.setTimerType(Qt.PreciseTimer)
         self.timer.setInterval(33)
@@ -403,6 +407,7 @@ class MainWindow(CharacterWorkspace,ModelWorkspace,ProjectSaving,PeopleWorkspace
 
     def update_readiness(self):
         if hasattr(self,'character_loader'):self.sync_characters()
+        if hasattr(self,'reload_face'):self.reload_face()
         self.update_people_readiness()
         tool = MOTION_TOOLS[self.model_choice.currentData()]
         self.compute_mode.setEnabled(not self.busy)
@@ -450,6 +455,7 @@ class MainWindow(CharacterWorkspace,ModelWorkspace,ProjectSaving,PeopleWorkspace
         self.save_project_action.setEnabled(not self.busy and not self.contact_saving and self.video_path is not None and self.info is not None)
         self.mesh_button.setEnabled(self.preview_preparation_available())
         self.import_character_action.setEnabled(not self.busy and not self.contact_saving)
+        self.update_face_status()
         self.flow_sampling.setEnabled(not self.busy)
         self.fast_sam.setEnabled(not self.busy)
         self.exmr_camera.setEnabled(not self.busy)
@@ -610,6 +616,8 @@ class MainWindow(CharacterWorkspace,ModelWorkspace,ProjectSaving,PeopleWorkspace
             self.reset_people()
             self.motion_view.auto_fit = True
             self.video_path, self.project, self.info = path, None, None
+            from .session_record import session_for
+            self.session_dir = session_for(path)
             self.setWindowTitle('RGB MoCap | Motion Workspace')
             self.flow_sampling.setCurrentIndex(self.flow_sampling.findData(0))
             self.fast_sam.setChecked(True)
@@ -789,6 +797,7 @@ class MainWindow(CharacterWorkspace,ModelWorkspace,ProjectSaving,PeopleWorkspace
         # 3D and overlays advance only when the corresponding decoded image is ready.
         self.motion_view.index = index
         self.motion_view.scene_time=self.source_offset+index/(self.info['fps'] if self.info else 30)
+        self.sync_face_audio()
         self.motion_view.update()
         if self.timer.isActive():
             now = time.perf_counter()
@@ -810,6 +819,7 @@ class MainWindow(CharacterWorkspace,ModelWorkspace,ProjectSaving,PeopleWorkspace
         self.timer.stop()
         self.timer_resolution.release()
         self.set_playback_indicator(False)
+        if hasattr(self,'face_audio'):self.face_audio.stop()
 
     def set_playback_indicator(self, playing):
         label = "Pause" if playing else "Play"
@@ -851,6 +861,8 @@ class MainWindow(CharacterWorkspace,ModelWorkspace,ProjectSaving,PeopleWorkspace
 
     def shutdown_preview(self):
         self.stop_playback()
+        if hasattr(self,'close_session'):self.close_session()
+        if hasattr(self,'close_face'):self.close_face()
         if hasattr(self,'character_loader'):
             self.character_loader.close();self.character_assets.clear()
         self.scene_loader.stop()

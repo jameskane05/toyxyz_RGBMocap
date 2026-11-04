@@ -168,6 +168,13 @@ class VideoView(QWidget):
         self.confidence = confidence
         self.update()
 
+    def show_live(self, image):
+        if image is None or image.isNull():
+            return
+        self.frame = image
+        self.source_size = (max(1, image.width()), max(1, image.height()))
+        self.update()
+
     def seek(self, index: int):
         if self.decoder is None:
             return

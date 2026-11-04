@@ -77,6 +77,11 @@ def setup():
         recover(ROOT,engine.remove_owned)
         if support_stage.exists():engine.remove_owned(folder,support_stage)
         pending.unlink()
+        try:
+            from start_menu_shortcut import install as install_shortcut
+            print('Start menu shortcut: '+str(install_shortcut(ROOT)),flush=True)
+        except Exception as exc:
+            print('Start menu shortcut was not created: '+str(exc),flush=True)
         print('Installation complete. Existing models and projects were retained.',flush=True)
 
 if __name__=='__main__':setup()

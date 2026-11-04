@@ -10,10 +10,24 @@ layout(std430,binding=0) readonly buffer Model { float model[]; };
 struct Vertex { vec4 position; vec4 normal; };
 layout(std430,binding=1) buffer Output { Vertex vertices[]; };
 layout(std430,binding=4) readonly buffer Frame { float pose[]; };
+layout(std430,binding=5) readonly buffer MorphRows { uvec2 morphRows[]; };
+layout(std430,binding=6) readonly buffer MorphIds { int morphIds[]; };
+layout(std430,binding=7) readonly buffer MorphDelta { float morphDelta[]; };
+layout(std430,binding=8) readonly buffer MorphWeights { float morphWeight[]; };
 uniform int vertexCount;
+uniform int morphCount;
 void main(){
  uint i=gl_GlobalInvocationID.x;if(i>=uint(vertexCount))return;
- vec4 v=vec4(model[3*i],model[3*i+1],model[3*i+2],1);
+ vec3 rest=vec3(model[3*i],model[3*i+1],model[3*i+2]);
+ if(morphCount>0){
+  uvec2 row=morphRows[i];
+  for(uint k=0u;k<row.y;k++){
+   int id=morphIds[row.x+k];
+   uint d=3u*(row.x+k);
+   if(id>=0 && id<morphCount) rest+=morphWeight[id]*vec3(morphDelta[d],morphDelta[d+1u],morphDelta[d+2u]);
+  }
+ }
+ vec4 v=vec4(rest,1);
  int r=3*vertexCount+2*int(i);int a=int(model[r]);int n=int(model[r+1]);
  vec3 p=vec3(0);
  for(int k=0;k<n;k++){
@@ -35,9 +49,9 @@ TEXTURE_VERTEX='''#version 430 core
 struct Vertex {vec4 position;vec4 normal;};
 layout(std430,binding=1) readonly buffer Output {Vertex vertices[];};
 layout(location=0) in vec3 corner;
-uniform mat4 mvp;uniform mat4 sceneTransform;out vec3 n;out vec2 uv;
+uniform mat4 mvp;uniform mat4 sceneTransform;uniform vec2 uvExtra;out vec3 n;out vec2 uv;
 void main(){Vertex v=vertices[int(corner.x)];gl_Position=mvp*sceneTransform*v.position;
-n=mat3(sceneTransform)*v.normal.xyz;uv=corner.yz;}'''
+n=mat3(sceneTransform)*v.normal.xyz;uv=corner.yz+uvExtra;}'''
 TEXTURE_FRAGMENT='''#version 430 core
 in vec3 n;in vec2 uv;out vec4 color;
 uniform sampler2D baseTexture;uniform bool hasTexture;uniform vec4 baseColor;
@@ -53,7 +67,7 @@ class CharacterRenderer(MeshRenderer):
         self.skin=self.program(((QOpenGLShader.Compute,SKIN),))
         self.surface=self.program(((QOpenGLShader.Vertex,VERTEX),(QOpenGLShader.Fragment,FRAGMENT)))
         self.textured=self.program(((QOpenGLShader.Vertex,TEXTURE_VERTEX),(QOpenGLShader.Fragment,TEXTURE_FRAGMENT)))
-        self.textures={};self.batches=[]
+        self.textures={};self.batches=[];self.morph_names=();self.morph_count=0;self.morph_weights=None
 
     def load(self,asset,palette):
         if self.asset_key==asset['key']:return
@@ -93,10 +107,51 @@ class CharacterRenderer(MeshRenderer):
             self.check('character textures')
         except Exception:
             self.release_buffers();raise
+        self.morph_names=tuple(str(n) for n in asset['morph_names']) if 'morph_names' in asset and len(asset['morph_names']) else ()
+        self.morph_count=len(self.morph_names)
+        self.morph_weight=self.buffer(np.zeros(64,np.float32))
+        if self.morph_count:
+            self.morph_rows=self.buffer(np.ascontiguousarray(asset['morph_rows'],np.uint32))
+            self.morph_ids=self.buffer(np.ascontiguousarray(asset['morph_ids'],np.int32))
+            self.morph_delta=self.buffer(np.ascontiguousarray(asset['morph_delta'],np.float32))
         self.asset_key=asset['key'];self.frame_key=None
         self.check('character load')
 
-    def draw(self,eye,basis,width,height,color=(.71,.71,.71),transform=None,clear_depth=True):
+    def deform(self,frame,key,weights=None):
+        packed=None
+        if self.morph_count:
+            packed=np.zeros(64,np.float32)
+            if weights is not None:
+                n=min(self.morph_count,len(weights),64)
+                packed[:n]=np.asarray(weights[:n],np.float32)
+        marker=(key,None if packed is None else packed.tobytes())
+        if marker==self.frame_key:
+            return
+        frame=np.ascontiguousarray(frame,dtype=np.float32)
+        self.frame.bind();self.frame.write(0,frame.tobytes(),frame.nbytes)
+        for index,buf in enumerate((self.model,self.vertices,self.offsets,self.neighbors,self.frame)):
+            self.gl.glBindBufferBase(0x90D2,index,buf.bufferId())
+        if packed is not None:
+            self.morph_weight.bind()
+            self.morph_weight.write(0, packed.tobytes(), packed.nbytes)
+        self.gl.glBindBufferBase(0x90D2, 8, self.morph_weight.bufferId())
+        if self.morph_count:
+            self.gl.glBindBufferBase(0x90D2,5,self.morph_rows.bufferId())
+            self.gl.glBindBufferBase(0x90D2,6,self.morph_ids.bufferId())
+            self.gl.glBindBufferBase(0x90D2,7,self.morph_delta.bufferId())
+        for program in (self.skin,self.normals):
+            program.bind()
+            self.gl.glUniform1i(program.uniformLocation('vertexCount'),self.vertex_count)
+            loc=program.uniformLocation('morphCount')
+            if loc>=0:
+                self.gl.glUniform1i(loc,self.morph_count)
+            self.gl.glDispatchCompute((self.vertex_count+63)//64,1,1)
+            self.gl.glMemoryBarrier(0x2000|0x1)
+            program.release()
+        self.frame_key=marker
+        self.dispatches+=1
+
+    def draw(self,eye,basis,width,height,color=(.71,.71,.71),transform=None,clear_depth=True,gaze=(0,0,0,0)):
         if not self.batches:
             return super().draw(eye,basis,width,height,color,transform,clear_depth)
         projection=QMatrix4x4();projection.perspective(40,width/max(1,height),.03,2000)
@@ -112,6 +167,13 @@ class CharacterRenderer(MeshRenderer):
         self.vao.bind()
         for batch in self.batches:
             texture=self.textures.get(batch['image'])
+            look=batch.get('look') or ()
+            ex=ey=0.
+            if len(look)==8:
+                ex=look[0]*gaze[0]+look[2]*gaze[1]+look[4]*gaze[2]+look[6]*gaze[3]
+                ey=look[1]*gaze[0]+look[3]*gaze[1]+look[5]*gaze[2]+look[7]*gaze[3]
+            loc=shader.uniformLocation('uvExtra')
+            if loc>=0:gl.glUniform2f(loc,ex,ey)
             gl.glUniform1i(shader.uniformLocation('hasTexture'),int(texture is not None))
             shader.setUniformValue('baseColor',QVector4D(*batch['color']))
             if texture:texture.bind(0)

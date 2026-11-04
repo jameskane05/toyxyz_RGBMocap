@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-feature android:name="android.hardware.vr.headtracking" android:required="true" android:version="1" />
+    <uses-feature android:name="oculus.software.face_tracking" android:required="false" />
+    <uses-feature android:name="oculus.software.eye_tracking" android:required="false" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="com.oculus.permission.FACE_TRACKING" />
+    <uses-permission android:name="com.oculus.permission.EYE_TRACKING" />
+
+    <application
+        android:allowBackup="false"
+        android:label="RGB Face"
+        android:usesCleartextTraffic="false">
+        <activity
+            android:name=".SetupActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity
+            android:name=".CaptureActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:screenOrientation="landscape"
+            android:configChanges="screenSize|screenLayout|orientation|keyboardHidden|keyboard|navigation|uiMode">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="com.oculus.intent.category.VR" />
+            </intent-filter>
+            <meta-data android:name="com.oculus.vr.focusaware" android:value="true" />
+        </activity>
+    </application>
+</manifest>

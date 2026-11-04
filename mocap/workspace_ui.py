@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QWidget, QFrame, QLabel, QPushButton, QComboBox, QCheckBox,
     QVBoxLayout, QHBoxLayout, QGroupBox, QSplitter, QScrollArea,
-    QSpinBox, QDoubleSpinBox, QProgressBar, QTextEdit, QMessageBox, QSizePolicy, QStackedWidget)
+    QSpinBox, QDoubleSpinBox, QProgressBar, QTextEdit, QLineEdit, QMessageBox, QSizePolicy, QStackedWidget)
 from .viewer import VideoView, MotionView
 from .timeline import TimelineSlider
 from .motion_tools import MOTION_TOOLS
@@ -135,6 +135,23 @@ def build_workspace(w):
     overlay.toggled.connect(toggle_overlay)
     video_header.addWidget(overlay)
     motion_panel, motion_header = editor("3D Viewport", w.motion_view)
+    motion_header.addWidget(QLabel('Quest'))
+    w.face_url = QLineEdit()
+    w.face_url.setObjectName('faceUrl')
+    w.face_url.setReadOnly(True)
+    w.face_url.setText('starting…')
+    w.face_url.setMinimumWidth(220)
+    w.face_url.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    w.face_url.setFocusPolicy(Qt.StrongFocus)
+    w.face_url.setToolTip(tooltip_text('The Face Mocap app on the Quest connects automatically. This address is the browser fallback: accept the certificate, then tap Enter MR. Click to select, then Ctrl+C or use Copy.'))
+    motion_header.addWidget(w.face_url, 1)
+    w.face_live_badge = QLabel('')
+    w.face_live_badge.setObjectName('muted')
+    motion_header.addWidget(w.face_live_badge)
+    w.copy_face_url = QPushButton('Copy')
+    w.copy_face_url.setObjectName('primary')
+    w.copy_face_url.setToolTip(tooltip_text('Copy the Quest Pro listen URL to the clipboard.'))
+    motion_header.addWidget(w.copy_face_url)
     w.bone_overlay=QCheckBox('Bone Overlay')
     w.bone_overlay.setChecked(True)
     w.bone_overlay.setToolTip(tooltip_text('Show the skeleton used for FBX export over the motion mesh. Display only.'))
@@ -526,6 +543,12 @@ def build_workspace(w):
     w.open_actions = [file_menu.addAction("Open Video...", w.choose_video), file_menu.addAction("Open Project...", w.choose_project)]
     w.import_character_action=file_menu.addAction('Import Character...',w.choose_character)
     w.import_character_action.setToolTip('Import a Mixamo FBX, VRM or PMX humanoid. Right-click its People row to retarget a source person.')
+    w.import_face_action=file_menu.addAction('Import Face Capture...')
+    w.import_face_action.setToolTip('Import a face-mocap JSON recording. A sibling .audio.mp3/.wav is copied automatically.')
+    w.import_face_audio_action=file_menu.addAction('Import Face Audio...')
+    w.listen_face_action=file_menu.addAction('Listen for Face Capture...')
+    w.save_face_listen_action=file_menu.addAction('Save Live Face Capture')
+    w.face_offset_action=file_menu.addAction('Face / Audio Offset...')
     w.save_project_action = file_menu.addAction('Save Project As...', w.save_project_as)
     w.save_project_action.setShortcut('Ctrl+Shift+S')
     w.save_project_action.setToolTip(tooltip_text('Save a separate project folder with a new name and location, including its video, motion and settings. Continue working in the saved copy.'))
@@ -541,6 +564,13 @@ def build_workspace(w):
         "Space: Play / Pause\nLeft / Right: Step one frame\nShift + Left / Right: Step one second\nHome / End: First / last frame\n\nViewport: LMB orbit, MMB / RMB pan, wheel zoom\nGizmo: click an axis to align the view\nTimeline: drag video clip edges to trim\nClick the frame ruler or drag the blue frame box to seek\nWheel to zoom; MMB to pan; Reset Trim restores the full clip\nClick ? in the timeline header for editing help.\nPlayback and reconstruction use the selected video clip range.\n\nThe mesh shows the selected motion result.\nFlowHMR and ExMR track fingers directly. GVHMR uses optional HandFlow for finger tracking.\nUse File > Export FBX to save the displayed animation."))
 
     menu_help = {
+        'Import Face Capture...': 'Import a face-mocap JSON file (52 ARKit blendshapes). A sibling audio file is copied when present.',
+        'Import Face Audio...': 'Import a wav/mp3 to play with the timeline.',
+        'Listen for Face Capture...': 'The face listener starts with the app. Use this to stop or start it again.',
+        'Start Face Listen': 'Start the local Quest Pro face receiver again.',
+        'Stop Face Listen': 'Stop the local Quest Pro face receiver.',
+        'Save Live Face Capture': 'Write received live frames into this project.',
+        'Face / Audio Offset...': 'Shift face and audio relative to the video clock.',
         'Open Video...': 'Choose a video to create motion from.',
         'Open Project...': 'Open saved motion and settings without reconstructing the video.',
         'Open Project Folder': 'Open the current project folder in File Explorer.',

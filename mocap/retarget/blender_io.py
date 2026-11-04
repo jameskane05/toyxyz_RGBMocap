@@ -129,6 +129,45 @@ def vertex_colors(obj):
     return result[:,:3]
 
 
+def _preview_morphs(meshes,count):
+    from mocap.face_capture import ARKIT_NAMES, canonicalize
+    from collections import defaultdict
+    hits=defaultdict(list);offset=0
+    for obj in meshes:
+        mesh=obj.data;n=len(mesh.vertices);keys=mesh.shape_keys
+        if keys and keys.key_blocks:
+            basis=keys.reference_key
+            rest=np.empty(n*3,np.float32);basis.data.foreach_get('co',rest);rest=rest.reshape(-1,3)
+            M=np.array(obj.matrix_world);R=M[:3,:3]
+            coords=np.empty(n*3,np.float32)
+            for block in keys.key_blocks:
+                if block==basis:continue
+                index=canonicalize(block.name)
+                if index is None:continue
+                block.data.foreach_get('co',coords)
+                delta=((coords.reshape(-1,3)-rest)@R.T)@A
+                keep=np.nonzero(np.linalg.norm(delta,axis=1)>1e-5)[0]
+                if len(keep):hits[ARKIT_NAMES[index]].append((keep+offset,delta[keep].astype(np.float32)))
+        offset+=n
+    names=[name for name in ARKIT_NAMES if name in hits]
+    if not names:return {}
+    rows=np.zeros((count,2),np.uint32);ids=[];deltas=[]
+    per=[[] for _ in range(count)]
+    for morph,chunks in ((names.index(name),hits[name]) for name in names):
+        for index,delta in chunks:
+            for vertex,value in zip(index.tolist(),delta):
+                per[int(vertex)].append((morph,value))
+    start=0
+    for i,items in enumerate(per):
+        rows[i]=(start,len(items));start+=len(items)
+        for morph,value in items:
+            ids.append(morph);deltas.append(value)
+    if not ids:return {}
+    report('Packed %d facial morphs (%d vertex deltas)'%(len(names),len(ids)))
+    return dict(morph_names=np.asarray(names),morph_rows=rows,morph_ids=np.asarray(ids,np.int32),
+                morph_delta=np.asarray(deltas,np.float32))
+
+
 def preview(out,arm,keyed,n):
     from .selective_fbx import body_dependencies
     metadata=Path(io_path(out/'import.json'))
@@ -162,7 +201,10 @@ def preview(out,arm,keyed,n):
     from mocap.mesh_data import adjacency
     vertices=np.concatenate(vertices).astype('float32');faces=np.asarray(faces,np.uint32)
     offsets,neighbors=adjacency(faces,len(vertices))
-    np.savez(io_path(out/'preview.npz'),vertices=vertices,colors=np.concatenate(colors),faces=faces,weights=np.asarray(influences,np.float32),rows=np.asarray(rows,np.uint32),offsets=offsets,neighbors=neighbors)
+    morphs=_preview_morphs([o for o in bpy.context.scene.objects if o.type=='MESH'],len(vertices))
+    payload=dict(vertices=vertices,colors=np.concatenate(colors),faces=faces,weights=np.asarray(influences,np.float32),rows=np.asarray(rows,np.uint32),offsets=offsets,neighbors=neighbors)
+    payload.update(morphs)
+    np.savez(io_path(out/'preview.npz'),**payload)
     frames=np.lib.format.open_memmap(io_path(out/'preview-frames.npy'),mode='w+',dtype='float32',shape=(n,len(palette)+1,4,4))
     C=np.eye(4);C[:3,:3]=A.T
     rest_inv={name:(arm.matrix_world@arm.data.bones[name].matrix_local).inverted() for name in palette}
@@ -179,6 +221,9 @@ def main(args):
     mode,folder,*rest=args;out=Path(folder)
     if mode=='import':import_character(Path(rest[0]),out)
     elif mode=='textures':
+        addons=Path(__file__).resolve().parents[2]/'third_party/character_import'
+        sys.path.insert(0,str(addons))
+        addon_utils.enable('io_scene_vrm',default_set=False,persistent=False)
         kind=json.loads(Path(io_path(out/'import.json')).read_text(encoding='utf8'))['kind']
         if kind not in {'mixamo','vrm','pmx'}:raise ValueError('Unsupported character kind')
         bpy.ops.wm.open_mainfile(filepath=io_path(out/f'{kind}-rest.blend'),load_ui=False)

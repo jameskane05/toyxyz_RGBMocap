@@ -472,8 +472,11 @@ class MotionView(ViewportBase):
                 key=data['asset']['key']
                 if key not in self.character_renderers:self.character_renderers[key]=CharacterRenderer()
                 renderer=self.character_renderers[key]
-                renderer.load(data['asset'],data['palette']);renderer.deform(matrix,(key,frame))
-                renderer.draw(*self._paint_camera,self.width(),self.height(),transform=transform,clear_depth=clear)
+                renderer.load(data['asset'],data['palette'])
+                weights=workspace.face_weights(getattr(renderer,'morph_names',()),self.scene_time) if hasattr(workspace,'face_weights') else None
+                renderer.deform(matrix,(key,frame),weights)
+                gaze=workspace.face_look() if hasattr(workspace,'face_look') else (0,0,0,0)
+                renderer.draw(*self._paint_camera,self.width(),self.height(),transform=transform,clear_depth=clear,gaze=gaze)
                 if self.show_names:
                     from .name_overlay import character_points
                     points=character_points(data['asset'].get('name_samples'),matrix,

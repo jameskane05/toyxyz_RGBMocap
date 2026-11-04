@@ -103,7 +103,8 @@ have not yet been verified; compatibility reports are welcome.
    support files, and installs the included prebuilt motion-correction module.
    The AI runtimes remain separate. Downloads and free disk space are needed;
    the install can take time.
-3. Run `RGBMoCap.cmd`. Keep its console open while the GUI runs; launch errors
+3. Run `RGBMoCap.cmd`, or search **RGB MoCap** in the Start menu after
+   `install.cmd` creates the shortcut. Keep its console open while the GUI runs; launch errors
    and exit codes are displayed there. Processing messages and app **Console** output
    are also sent there, but very long or high-volume output can be truncated or
    dropped. Use **Help > Check System** if needed.
@@ -165,6 +166,25 @@ Keep `models`, `runtime*`, `mocap`, `third_party`, bundled assets and
 the remaining `.setup` repair files. Deleting these can remove required model
 files or break the app. Downloaded model archives stored elsewhere can be removed after a successful installation/import if you do not
 need an offline copy; keep a backup of manually acquired restricted models.
+
+## Live session
+
+The **Session** panel records the Quest Pro and the iPhone together. The Face
+Mocap app already installed on the Quest connects to this PC by itself and drives
+the character's face while it is open. The address in the viewport is the browser
+fallback, and the iPhone app. **Record** (on the PC, the Quest, or the iPhone)
+starts one take: face tracking from the headset, full-resolution video from the
+phone, and the selected microphone. **Stop** saves the take.
+**Reconstruct 3D** runs body tracking afterward; it does not run during the take.
+
+Drag the timeline selection, then **Crop session** to keep that range for the
+video, face, and audio together. The uncropped take stays in the session's
+`full` folder. **Save clip** writes that same range as a separate clip without
+changing the full session.
+
+**ElevenLabs** in the same panel fetches your voices and generates a replacement
+track from the recorded audio. The original recording remains available through
+**Use original audio**. The API key stays in this installation's local settings.
 
 ## Start here
 

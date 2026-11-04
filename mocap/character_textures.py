@@ -10,7 +10,7 @@ import numpy as np
 
 from .retarget.file_paths import io_path
 
-CACHE = 'preview-textures-v1'
+CACHE = 'preview-textures-v2'
 
 
 def load(source, asset, cancelled):
@@ -81,7 +81,15 @@ def load(source, asset, cancelled):
         end += batch['count']
     if end != len(corners):
         raise ValueError('Incomplete character texture triangles')
-    return dict(key=str(source), corners=corners, images=images, batches=meta['batches'], metadata=meta, bytes=total)
+    eyes = None
+    eye_path = folder / 'eyes.json'
+    if eye_path.is_file() and eye_path.stat().st_size < 4096:
+        loaded = json.loads(eye_path.read_text(encoding='utf8'))
+        if (isinstance(loaded, dict) and isinstance(loaded.get('left'), int)
+                and isinstance(loaded.get('right'), int)):
+            eyes = dict(left=loaded['left'], right=loaded['right'])
+    return dict(key=str(source), corners=corners, images=images, batches=meta['batches'],
+                metadata=meta, bytes=total, eyes=eyes)
 
 
 def validate_geometry(meta, asset):
