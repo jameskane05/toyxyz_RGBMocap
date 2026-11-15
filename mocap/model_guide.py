@@ -15,12 +15,16 @@ PROJECT_URLS = {
     'gvhmr': 'https://github.com/zju3dv/GVHMR',
     'flowhmr': 'https://github.com/flowhmr/flowhmr',
     'exmr': 'https://github.com/twehrbein/ExMR',
+    'gemx': 'https://github.com/NVlabs/GEM-X',
 }
 DESCRIPTIONS = {
     'gvhmr': 'Lowest overall motion quality in our tests, but sometimes better for unusual poses such as backflips. '
              'No native finger tracking. Optional HandFlow adds finger motion; FootMR refines ankles, and HTD refines body motion. These add processing time.',
     'flowhmr': 'Slow, but the best overall motion quality in our tests. Tracks body and fingers together without a separate finger add-on.',
     'exmr': 'Generally fast, with good motion quality in our tests. A practical choice for a first attempt. Tracks body and fingers together without a separate finger add-on.',
+    'gemx': 'Fixed-camera clips up to 60 seconds, one person, native SOMA with 77 joints and fingers. '
+            'Does not use SMPL. Run Setup_GEMX.cmd after install.cmd; it reuses the ExMR Python. '
+            'This fork has not measured its speed. Upstream reports about 1 minute 44 seconds and 3.48 GiB VRAM on a 9.8 second clip.',
 }
 
 

@@ -11,6 +11,8 @@ class MotionTool:
     refinement: tuple[str, ...] = ()
 
     def stages(self, refine=False, footmr=False, correction=False, handflow=False):
+        if self.key == 'gemx':
+            return ('gemx_reconstruct',)
         if self.key == 'flowhmr':
             return [*self.reconstruction, *(('correct',) if correction else ()), 'flow_export']
         return [*self.reconstruction, *(self.refinement if refine else ()), *(('footmr',) if footmr and self.key == 'gvhmr' else ()),
@@ -20,7 +22,8 @@ class MotionTool:
 
 MOTION_TOOLS = {"gvhmr": MotionTool("gvhmr", "GVHMR", ("track", "gvhmr"), ("pva", "refine")),
                 "flowhmr": MotionTool("flowhmr", "FlowHMR", ("track", "flow_camera", "flow_features", "flowhmr")),
-                "exmr": MotionTool("exmr", "ExMR", ("track", "exmr_preprocess", "exmr_features", "exmr"))}
+                "exmr": MotionTool("exmr", "ExMR", ("track", "exmr_preprocess", "exmr_features", "exmr")),
+                "gemx": MotionTool("gemx", "GEM-X", ("gemx_reconstruct",))}
 
 
 class UnsupportedMotionTool(ValueError):
@@ -88,6 +91,15 @@ def result_is_current(project, kind, ignore_contacts=False):
     try:
         require_supported_project(project)
     except (OSError, ValueError, TypeError, KeyError):
+        return False
+    from .gemx_result import is_project
+    if is_project(project):
+        if kind == 'initial':
+            from .gemx_result import current
+            return current(project)
+        if kind == 'corrected_initial':
+            from .gemx_correct import selected
+            return selected(project, ignore_contacts=ignore_contacts) is not None
         return False
     if (project/'exmr_pending.json').exists():return False
     if (project/'exmr_receipt.json').exists():
@@ -165,6 +177,15 @@ def resolve_motion_result(project, result="auto"):
 
 def selected_export(project, kind):
     """Only the target rig shown by Mixamo mode may be exported."""
+    from .gemx_result import RECEIPT, current as gemx_current, is_project
+    if is_project(project):
+        if kind == 'initial' and gemx_current(project):
+            return project / RECEIPT
+        if kind == 'corrected_initial':
+            from .gemx_correct import RECORD, selected
+            found = selected(project)
+            return None if found is None else found[0] / RECORD
+        return None
     from .mixamo_data import current
     from .result_artifacts import artifacts_current
     if (project/'flow_prediction.pt').exists():

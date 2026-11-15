@@ -88,7 +88,7 @@ class MotionView(ViewportBase):
         self.scene_visible=set();self.scene_colors={};self.scene_selected=None
         self.scene_time=0.;self.scene_renderers={};self.scene_presented={}
         self.character_workspace=None;self.character_renderers={};self.character_error=None
-        self.character_name_points=[]
+        self.character_name_points=[];self._character_bone_segments=None
         self.render_mode='raw';self.show_bones=True
         self.target_frames=None;self.target_asset=None;self.raw_asset=None;self.native_vertices=None
         self.target_renderers={};self.bone_renderers={};self.bone_error=None;self.native_required=False
@@ -455,10 +455,16 @@ class MotionView(ViewportBase):
 
     def draw_characters(self,painter):
         self.character_name_points=[]
+        self._character_bone_segments=None
         workspace=self.character_workspace
         if workspace is None or not OPENGL_VIEW:return False
         draws=list(workspace.character_draws())
         drawn=False
+        if self.show_bones:
+            from .name_overlay import character_bones
+            pieces=[character_bones(data['asset'],matrix,transform) for _character,data,matrix,_frame,transform in draws]
+            pieces=[piece for piece in pieces if piece is not None]
+            if pieces:self._character_bone_segments=np.concatenate(pieces,axis=0)
         painter.beginNativePainting()
         try:
             from .character_gl import CharacterRenderer
@@ -548,6 +554,15 @@ class MotionView(ViewportBase):
 
     def draw_hand_locks(self,painter,index,frames,activity=None,transform=None):
         self.draw_contact_discs(painter,self.hand_lock_discs(index,frames,activity,transform),CONTACT_COLORS[2:])
+
+    def draw_active_locks(self,painter):
+        """Contact discs for the open take when its person mesh is hidden."""
+        if self.joints is None:
+            return
+        index = min(self.index, len(self.joints) - 1)
+        self.draw_foot_locks(painter, index, self.joints[index, :22])
+        if self.target_frames is not None and index < len(self.target_frames):
+            self.draw_hand_locks(painter, index, self.target_frames[index])
 
     def draw_people_hand_locks(self,painter,actors):
         if not self.show_foot_locks:return
@@ -803,12 +818,14 @@ class MotionView(ViewportBase):
         correction_plane_visible=self.draw_correction_floor(painter,lines3d)
         self.name_labels_presented=[]
         bone_actors=[]
+        source_visible=False
 
         if self.people_mode:
             if self.people_scene is not None:
                 actors=self.scene_actors()
                 self.draw_people_scene(painter,actors,lines3d)
                 bone_actors=actors
+                source_visible=bool(actors)
             else:
                 painter.setPen(QColor('#bcbcbc'))
                 painter.drawText(self.rect().adjusted(25,60,-25,-60),Qt.AlignCenter|Qt.TextWordWrap,self.scene_message)
@@ -821,6 +838,7 @@ class MotionView(ViewportBase):
             painter.drawText(self.rect().adjusted(25, 30, -25, -30), Qt.AlignCenter | Qt.TextWordWrap,
                              "No motion loaded\n\nReconstruct a motion or open a project\nto compare the initial and refined animation.")
         elif self.joints is not None:
+            source_visible=True
             index = min(self.index, len(self.joints) - 1)
             joints = self.joints[index, :22]
             # Root trajectory preserves world translation when following the actor.
@@ -865,10 +883,14 @@ class MotionView(ViewportBase):
             painter.drawText(QRectF(18, 39, self.width() - 36, 20), Qt.AlignLeft, f"Frame {index + 1} / {len(self.joints)}")
             painter.drawText(QRectF(18, 60, self.width() - 36, 20), Qt.AlignLeft,
                              f"X {joints[0, 0]:+.2f}   Z {joints[0, 2]:+.2f} m")
+        if not source_visible:
+            self.draw_active_locks(painter)
         characters_drawn=self.draw_characters(painter)
         # Final independent depth layer: exported bones stay above characters,
         # with the same ordering whether Bone Overlay was on or off previously.
         self.draw_bones(painter,bone_actors)
+        if self._character_bone_segments is not None:
+            lines3d(self._character_bone_segments,'#8fd0ff',1.6)
         if self._empty_people_notice and not characters_drawn:
             painter.setPen(QColor('#bcbcbc'))
             painter.drawText(self.rect().adjusted(25,60,-25,-60),Qt.AlignCenter|Qt.TextWordWrap,

@@ -96,3 +96,10 @@ These checks describe the recorded examples, not a guarantee for every video,
 character or computer. Model weights and registered body data remain separate and
 subject to their providers' terms. Review the applicable third-party notices and
 corresponding source/build requirements before redistributing binaries.
+
+## GEM-X port
+
+The optional GEM-X modules were brought over from upstream commit `a871ac0` and
+hooked into this fork's model list, GUI, preview, FBX export, and character
+retarget. This checkout did not run `Setup_GEMX.cmd`, download weights, or
+reconstruct a video. Do not treat upstream timing or VRAM figures as local results.

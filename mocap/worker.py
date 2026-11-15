@@ -127,6 +127,14 @@ def emit(kind: str, **data) -> None:
     print(PREFIX + json.dumps({"type": kind, **data}, ensure_ascii=False), flush=True)
 
 
+def debug_videos(project, stage, emit, person_id=None):
+    try:
+        from .debug_video import export_for_stage
+        export_for_stage(project, stage, emit, person_id)
+    except Exception as error:
+        print('Debug video was not written: ' + str(error), flush=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("stage", choices=["diagnose", "prepare", "download", "import_model", "mesh", "rig", "save_fbx", "track", "pva", "features", "gvhmr", "refine", "footmr", "handflow", "correct", "export", "people", "person", 'flow_camera','flow_features','flowhmr','flow_export','exmr_preprocess','exmr_features','exmr'])
@@ -175,6 +183,8 @@ def main() -> int:
                 manifest['exmr_options']=options(json.loads(os.environ.get('RGB_MOCAP_EXMR_OPTIONS','{}')))
             if args.motion_tool:
                 manifest.setdefault('pipeline',{})['model']=args.motion_tool
+            if os.environ.get('RGB_MOCAP_DEBUG_VIDEOS') in ('0', '1'):
+                manifest['debug_videos'] = os.environ['RGB_MOCAP_DEBUG_VIDEOS'] == '1'
             if args.result != "auto":
                 manifest["pipeline"] = {"model": args.motion_tool or "gvhmr", "result": args.result,
                                         "htd_refine": result_options(args.result)[0], "footmr": result_options(args.result)[1], 'handflow':has_handflow(args.result)}
@@ -206,10 +216,12 @@ def main() -> int:
         if require_supported_project(project).key=='exmr' and args.stage.startswith('exmr'):
             from .exmr_backend import run_stage
             run_stage(project,args.stage,args.result,emit,force=args.force)
+            debug_videos(project, args.stage, emit)
             return 0
         if require_supported_project(project).key=='flowhmr' and args.stage not in ('people','person','track'):
             from .flow_backend import run_stage
             run_stage(project,args.stage,args.result,emit,force=args.force)
+            debug_videos(project, args.stage, emit)
             return 0
         if args.stage == 'rig':
             from .mixamo_data import prepare
@@ -266,6 +278,7 @@ def main() -> int:
             else:
                 output=prepare_person(project,args.person_id,args.first_frame,args.end_frame or manifest['frames'],args.result,
                     {'auto_floor':args.floor is None,'floor':float(args.floor or 0),'preset':args.correction_preset,'pelvis_offset':args.pelvis_offset,'mode':args.correction_mode,'foot_lock':bool(args.foot_lock),'hand_lock':bool(args.hand_lock)},emit)
+                debug_videos(project, args.stage, emit, args.person_id)
             emit('complete',stage=args.stage,output=str(output),elapsed=time.monotonic()-started,cached=False,
                 peak_ram_gib=round(psutil.Process().memory_info().peak_wset/1024**3,3),
                 peak_cuda_allocated_gib=round(torch.cuda.max_memory_allocated()/1024**3,3) if torch.cuda.is_initialized() else 0)
@@ -317,6 +330,7 @@ def main() -> int:
                 record['fingerprint'] = signature
                 atomic_json(manifest_path,manifest)
         if not args.force and record.get("status") == "complete" and cache_matches and expected.is_file() and has_companions:
+            debug_videos(project, args.stage, emit)
             emit("complete", stage=args.stage, output=str(expected), cached=True, elapsed=0)
             return 0
         import psutil
@@ -367,6 +381,7 @@ def main() -> int:
         manifest["stages"][args.stage] = {"status": "complete", "output": str(result), "elapsed": elapsed, "engine_version": 1,
                                          "fingerprint": fingerprint(args.stage,project,args.result), **memory}
         atomic_json(manifest_path, manifest)
+        debug_videos(project, args.stage, emit)
         emit("complete", stage=args.stage, output=str(result), elapsed=elapsed, cached=False, **memory)
         return 0
     except Exception as error:

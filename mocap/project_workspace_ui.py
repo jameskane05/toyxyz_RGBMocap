@@ -12,7 +12,8 @@ class ModelWorkspace:
     def workspace_settings(self):
         return dict(result=self.active_result,correction=self.selected_correction_options(),
             flow_options={'camera_interval':self.flow_sampling.currentData(),'fast_sam':self.fast_sam.isChecked()},
-            exmr_options={'static_camera':self.exmr_camera.currentData(),'smoothing':'global' if self.exmr_smoothing.isChecked() else 'none'})
+            exmr_options={'static_camera':self.exmr_camera.currentData(),'smoothing':'global' if self.exmr_smoothing.isChecked() else 'none'},
+            characters={'arm_clearance':self.arm_clearance.isChecked()})
 
     def restore_workspace_settings(self,settings):
         from .motion_tools import result_options,has_handflow,result_kind
@@ -28,6 +29,7 @@ class ModelWorkspace:
         exmr=settings.get('exmr_options',{})
         self.exmr_camera.setCurrentIndex(self.exmr_camera.findData(exmr.get('static_camera',True)))
         self.exmr_smoothing.setChecked(exmr.get('smoothing','global')=='global')
+        self.arm_clearance.setChecked(settings.get('characters',{}).get('arm_clearance',True))
         self.active_result=self.selected_result()
 
     def workspace_view(self):
@@ -88,6 +90,9 @@ class ModelWorkspace:
                 self.remember_workspace_model()
             self.workspace_root=root
             self._workspace_camera=None
+            from .video import attach_session_face
+            try:attach_session_face(workspace.media_path(root,state),root)
+            except OSError as error:self.log.append('Could not copy the session face and audio: '+str(error))
             return self.switch_workspace_model(state['active_model'],opening=True)
         except (OSError,ValueError,KeyError) as error:
             self.status.setText('Cannot open project: '+str(error));return False
@@ -155,3 +160,6 @@ class ModelWorkspace:
         self._workspace_video_reference=root is not None
         if root is not None:
             workspace.set_active(root,state['pipeline']['model'],project)
+            from .video import attach_session_face
+            try:attach_session_face(workspace.media_path(root),root)
+            except OSError as error:self.log.append('Could not copy the session face and audio: '+str(error))

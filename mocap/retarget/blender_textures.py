@@ -10,7 +10,7 @@ import numpy as np
 
 from .file_paths import io_path
 
-CACHE = 'preview-textures-v2'
+CACHE = 'preview-textures-v3'
 
 
 def _nodes(tree, seen=None):
@@ -25,6 +25,19 @@ def _nodes(tree, seen=None):
         yield node
         if node.type == 'GROUP' and node.node_tree:
             yield from _nodes(node.node_tree, seen)
+
+
+def _constant_alpha(mat, color):
+    """Glass such as a cornea stores coverage on Principled Alpha, not the color."""
+    if mat is None or not mat.use_nodes or mat.node_tree is None or len(color) < 4:
+        return color
+    bs = next((n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None)
+    sock = bs.inputs.get('Alpha') if bs else None
+    if sock is None or sock.is_linked:
+        return color
+    color = list(color)
+    color[3] = float(sock.default_value)
+    return color
 
 
 def _surface(mat):
@@ -50,7 +63,7 @@ def _surface(mat):
                 return float(sock.default_value) if sock is not None else default
             scale = [grab('UV Scale X', 1.), grab('UV Scale Y', 1.)]
             offset = [grab('UV Offset X', 0.), grab('UV Offset Y', 0.)]
-        return color, image, scale, offset
+        return _constant_alpha(mat, color), image, scale, offset
     nodes = mat.node_tree.nodes
     bs = next((n for n in nodes if n.type == 'BSDF_PRINCIPLED'), None)
     inp = bs.inputs.get('Base Color') if bs else None
@@ -62,7 +75,7 @@ def _surface(mat):
         node = next((n for n in nodes if n.type == 'TEX_IMAGE' and n.image and 'shade' not in n.name.lower()), None)
         if node:
             image = node.image
-    return color, image, scale, offset
+    return _constant_alpha(mat, color), image, scale, offset
 
 
 def _look_offsets():
@@ -87,33 +100,6 @@ def _look_offsets():
                 slot = found.setdefault(bind.material.name, {})
                 slot[key] = (float(bind.offset[0]), float(bind.offset[1]))
     return found
-
-
-def _eye_bones():
-    try:
-        from io_scene_vrm.editor.extension_accessor import get_armature_extension
-    except Exception:
-        return None
-    for arm in bpy.context.scene.objects:
-        if arm.type != 'ARMATURE':
-            continue
-        ext = get_armature_extension(arm.data)
-        for group in (getattr(ext, 'vrm1', None), getattr(ext, 'vrm0', None)):
-            human = getattr(group, 'humanoid', None)
-            bones = getattr(human, 'human_bones', None)
-            if bones is None:
-                continue
-            pair = []
-            for side in ('left_eye', 'right_eye'):
-                node = getattr(getattr(bones, side, None), 'node', None)
-                name = getattr(node, 'bone_name', None) if node is not None else None
-                pair.append(name)
-            if not all(pair):
-                continue
-            palette = sorted(bone.name for bone in arm.data.bones)
-            if all(name in palette for name in pair):
-                return dict(left=palette.index(pair[0]), right=palette.index(pair[1]))
-    return None
 
 
 def extract(out):
@@ -175,9 +161,6 @@ def extract(out):
         metadata = dict(version=1, vertices=offset, faces_sha256=hashlib.sha256(faces.tobytes()).hexdigest(),
                         batches=batches, images=sizes)
         (temp / 'manifest.json').write_text(json.dumps(metadata), encoding='utf8')
-        eyes = _eye_bones()
-        if eyes:
-            (temp / 'eyes.json').write_text(json.dumps(eyes), encoding='utf8')
         temp.rename(out / CACHE)
     finally:
         # Only this invocation's temporary directory, never a user asset.

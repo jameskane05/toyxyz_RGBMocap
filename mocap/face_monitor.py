@@ -130,7 +130,8 @@ class QuestMonitor(threading.Thread):
             self.hub.start()
             self._armed = True
         elif not recording and self._armed:
-            self.hub.stop()
+            if not self.hub.hold:
+                self.hub.stop()
             self._armed = False
         try:
             self.hub.ingest(dict(blendshapes=weights), client=address)

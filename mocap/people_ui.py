@@ -172,6 +172,7 @@ class PeopleWorkspace:
         self.sync_scene_visibility()
 
         self.restore_workspace_camera(consume=True)
+        self.run_auto_retarget()
 
     def sync_shared_floor_controls(self):
         if self.people_root is None:
@@ -218,6 +219,7 @@ class PeopleWorkspace:
     def people_scene_failed(self,generation,message):
         if generation==self.scene_loader.generation:
             self._scene_key=None
+            self._auto_retarget=None
             self.motion_view.scene_message='Shared scene unavailable.\n'+message
             self.motion_view.update()
             self.status.setText('Shared scene unavailable: '+message)
@@ -275,6 +277,19 @@ class PeopleWorkspace:
         self.people_note.setObjectName('muted');self.people_note.setWordWrap(True)
         self.people_note.hide()
         column.addWidget(self.people_note)
+        column.addWidget(QLabel('Characters'))
+        self.character_library_empty = QLabel('Import a VRM and it stays here. Click a character to add it to this session.')
+        self.character_library_empty.setObjectName('muted')
+        self.character_library_empty.setWordWrap(True)
+        column.addWidget(self.character_library_empty)
+        self.character_library = QListWidget()
+        self.character_library.setObjectName('characterLibrary')
+        self.character_library.setAccessibleName('Character library')
+        self.character_library.setTextElideMode(Qt.ElideMiddle)
+        self.character_library.setMinimumHeight(72)
+        self.character_library.setMaximumHeight(120)
+        self.character_library.setToolTip(tooltip_text('Imported characters stay in the app. Click one to add it to this session. Right-click to rename or delete it. Each character remembers its ElevenLabs voice.'))
+        column.addWidget(self.character_library)
         layout.addWidget(self.people_panel)
         movie = QWidget()
         movie_layout = QVBoxLayout(movie)
@@ -296,6 +311,7 @@ class PeopleWorkspace:
         self.find_person_button.setEnabled(enabled and self.video_readable)
         self.people_list.setEnabled(enabled)
         self.person_takes.setEnabled(enabled)
+        self.character_library.setEnabled(enabled)
 
     def reset_people(self):
         self.clear_people_scene()
@@ -316,7 +332,15 @@ class PeopleWorkspace:
         state = load_people(root)
         if state is None:
             self.reset_people()
-            if (Path(project)/'tracking.npz').is_file():self.begin_single_tracking(project,loading=True)
+            if (Path(project)/'tracking.npz').is_file():self.begin_single_tracking(project,loading=True);return
+            from .gemx_result import current, is_project
+            if is_project(project) and current(project):
+                from .single_actor import preferences
+                self._single_actor=preferences(project)
+                self._single_actor.update(pending=False,observations=manifest['frames'],frames=manifest['frames'])
+                self._single_actor_project=self.project
+                self.active_person_id=1
+                self.update_single_actor_row('1 primary person reconstructed')
             return
         self._single_actor = self._single_actor_project = None
         self.motion_view.single_actor_visible=True
@@ -386,9 +410,11 @@ class PeopleWorkspace:
             thumbnail=person.get('thumbnail')
             item.setIcon(QIcon(QPixmap.fromImage(thumbnail)) if thumbnail is not None else QIcon())
             count=person.get('observations',0)
-            item.setToolTip(tooltip_text(f"{person['name']} | Automatic single-person target | {count} observed frames\n"
-                'Check to extract and show; select to edit. Use Find person for identity-aware selection.\n'
-                'This tracker may switch people when they cross or overlap.'))
+            from .gemx_result import is_project
+            detail=('GEM-X primary person. One fixed-camera clip, one person.' if is_project(self.project)
+                else 'Check to extract and show; select to edit. Use Find person for identity-aware selection.\n'
+                     'This tracker may switch people when they cross or overlap.')
+            item.setToolTip(tooltip_text(f"{person['name']} | Automatic single-person target | {count} observed frames\n"+detail))
             self.people_list.setCurrentItem(item)
             self.person_takes.clear();self.person_takes.hide()
         finally:self._people_syncing=False
@@ -473,6 +499,11 @@ class PeopleWorkspace:
     def person_selected(self,item,previous=None):
         if self._people_syncing or item is None or self.busy or self.contact_saving:return
         if isinstance(item.data(Qt.UserRole),str):
+            if hasattr(self,'selected_character') and hasattr(self,'select_library_combo'):
+                character=self.selected_character()
+                if character and character.get('library_id'):
+                    self.select_library_combo(character['library_id'])
+                    self._bind_character_voice()
             self.update_readiness();return
         self.activate_person(item.data(Qt.UserRole))
         self.update_readiness()

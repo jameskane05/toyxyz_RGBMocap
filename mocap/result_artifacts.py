@@ -45,6 +45,10 @@ def commit_artifacts(project,kind,source_stat,fps):
 
 def artifacts_current(project,kind):
     """Only stat small metadata here; never read motion tensors in the GUI."""
+    from .gemx_result import is_project
+    if is_project(project):
+        from .motion_tools import result_is_current
+        return result_is_current(project, kind, ignore_contacts=True)
     from .motion_tools import RESULTS
     project=Path(project)
     if pending_path(project,kind,'export').exists() or pending_path(project,kind,'correct').exists():return False

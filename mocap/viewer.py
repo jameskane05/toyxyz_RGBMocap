@@ -37,6 +37,7 @@ class VideoView(QWidget):
         self.zoom = 1.0
         self.pan = QPointF()
         self._pan_position = None
+        self.live = False
 
     def reset_view(self):
         self.zoom = 1.0
@@ -44,9 +45,24 @@ class VideoView(QWidget):
         self._end_pan()
         self.update()
 
+    def blank(self):
+        self.live = True
+        self.frame = None
+        self.logical_size = None
+        self.boxes = self.observed = self.keypoints = self.confidence = None
+        self.update()
+
+    def _space(self):
+        # Analysis pixels when a project set them. The preview image is a
+        # smaller copy of that frame; live camera frames have no analysis size.
+        if self.live or not self.logical_size:
+            return self.source_size
+        return self.logical_size
+
     def image_rect(self):
         """One source-coordinate mapping for the image and every observation."""
-        w, h = self.source_size
+        w, h = self._space()
+        w, h = max(1, w), max(1, h)
         scale = min(self.width() / w, self.height() / h) * self.zoom
         return QRectF((self.width() - w * scale) / 2 + self.pan.x(),
                       (self.height() - h * scale) / 2 + self.pan.y(),
@@ -128,7 +144,10 @@ class VideoView(QWidget):
 
     def _opened(self, generation, metadata):
         if self.decoder is not None and self.sender() is self.decoder and generation == self.generation:
-            self.source_size = self.logical_size or (metadata["width"], metadata["height"])
+            if not self.logical_size:
+                self.logical_size = (metadata["width"], metadata["height"])
+            self.source_size = self.logical_size
+            self.update()
             self.metadata_ready.emit(metadata)
 
     def _failed(self, generation, message):
@@ -157,6 +176,8 @@ class VideoView(QWidget):
                 self._present(index, image)
 
     def _present(self, index, image):
+        if self.live:
+            return
         self.index, self.frame = index, image
         self.update()
         self.frame_presented.emit(index)
@@ -171,6 +192,7 @@ class VideoView(QWidget):
     def show_live(self, image):
         if image is None or image.isNull():
             return
+        self.live = True
         self.frame = image
         self.source_size = (max(1, image.width()), max(1, image.height()))
         self.update()
@@ -192,7 +214,7 @@ class VideoView(QWidget):
             painter.drawText(self.rect(), Qt.AlignCenter, "Open a video to begin\nMP4 · MOV · AVI")
             return
         rect = self.image_rect()
-        ratio = rect.width() / self.source_size[0]
+        ratio = rect.width() / max(1, self._space()[0])
         offset_x, offset_y = rect.x(), rect.y()
         painter.drawImage(rect, self.frame)
         if self.show_observations and self.boxes is not None and self.index < len(self.boxes):

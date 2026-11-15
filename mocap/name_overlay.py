@@ -34,6 +34,49 @@ def character_points(samples,frames,transform=None):
     return points
 
 
+def character_bones(asset, frames, transform=None):
+    """Posed bone segments in the same space as the skinned preview."""
+    if asset is None or frames is None or 'bone_heads' not in asset:
+        return None
+    frames = np.asarray(frames)
+    heads = np.asarray(asset['bone_heads'], np.float32)
+    index = asset.get('bone_index')
+    if index is not None:
+        index = np.asarray(index, np.int32)
+        if len(index) != len(heads) or len(index) == 0 or int(index.max()) >= len(frames):
+            return None
+        matrices = frames[index]
+    else:
+        count = min(len(heads), len(frames))
+        if count < 1:
+            return None
+        heads = heads[:count]
+        matrices = frames[:count]
+    posed = np.einsum('nij,nj->ni', matrices[:, :3, :3], heads) + matrices[:, :3, 3]
+    tails = None if index is not None else asset.get('bone_tails')
+    if tails is not None:
+        tails = np.asarray(tails, np.float32)[:len(posed)]
+        posed_tails = np.einsum('nij,nj->ni', matrices[:, :3, :3], tails) + matrices[:, :3, 3]
+        segments = np.stack((posed, posed_tails), axis=1)
+        keep = np.linalg.norm(segments[:, 1] - segments[:, 0], axis=1) > 1e-4
+        if not np.any(keep):
+            return None
+        segments = segments[keep]
+    else:
+        parents = asset.get('bone_parents')
+        if parents is None:
+            return None
+        parents = np.asarray(parents, np.int32)
+        child = np.flatnonzero((parents >= 0) & (parents < len(posed)))
+        if len(child) == 0:
+            return None
+        segments = np.stack((posed[parents[child]], posed[child]), axis=1)
+    if transform is not None:
+        placed = np.asarray(transform)
+        segments = segments @ placed[:3, :3].T + placed[:3, 3]
+    return segments
+
+
 def body_points(joints, frames=None, asset=None, transform=None):
     """Use at most the committed 52 bone heads/tips, regardless of clip length."""
     points=np.asarray(joints)[:22]
@@ -41,7 +84,7 @@ def body_points(joints, frames=None, asset=None, transform=None):
         segments=asset['bones']['segments']
         tips=[frames[bone,:3,:3] @ delta + frames[bone,:3,3]
               for bone,_,delta in segments]
-        points=np.concatenate((frames[:52,:3,3],tips))
+        points=np.concatenate((frames[:len(segments),:3,3],tips))
     if transform is not None:
         points=points @ transform[:3,:3].T + transform[:3,3]
     return points

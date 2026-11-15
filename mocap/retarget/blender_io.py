@@ -130,7 +130,7 @@ def vertex_colors(obj):
 
 
 def _preview_morphs(meshes,count):
-    from mocap.face_capture import ARKIT_NAMES, canonicalize
+    from mocap.face_capture import ARKIT_NAMES, canonicalize, merge_alias_deltas
     from collections import defaultdict
     hits=defaultdict(list);offset=0
     for obj in meshes:
@@ -140,12 +140,15 @@ def _preview_morphs(meshes,count):
             rest=np.empty(n*3,np.float32);basis.data.foreach_get('co',rest);rest=rest.reshape(-1,3)
             M=np.array(obj.matrix_world);R=M[:3,:3]
             coords=np.empty(n*3,np.float32)
+            grouped=defaultdict(list)
             for block in keys.key_blocks:
                 if block==basis:continue
                 index=canonicalize(block.name)
                 if index is None:continue
                 block.data.foreach_get('co',coords)
-                delta=((coords.reshape(-1,3)-rest)@R.T)@A
+                grouped[index].append((block.name,((coords.reshape(-1,3)-rest)@R.T)@A))
+            for index,options in grouped.items():
+                delta=merge_alias_deltas(ARKIT_NAMES[index],options)
                 keep=np.nonzero(np.linalg.norm(delta,axis=1)>1e-5)[0]
                 if len(keep):hits[ARKIT_NAMES[index]].append((keep+offset,delta[keep].astype(np.float32)))
         offset+=n
@@ -204,6 +207,9 @@ def preview(out,arm,keyed,n):
     morphs=_preview_morphs([o for o in bpy.context.scene.objects if o.type=='MESH'],len(vertices))
     payload=dict(vertices=vertices,colors=np.concatenate(colors),faces=faces,weights=np.asarray(influences,np.float32),rows=np.asarray(rows,np.uint32),offsets=offsets,neighbors=neighbors)
     payload.update(morphs)
+    if palette:
+        payload['bone_heads']=np.array([np.array(arm.matrix_world@arm.data.bones[name].head_local)@A for name in palette],np.float32)
+        payload['bone_tails']=np.array([np.array(arm.matrix_world@arm.data.bones[name].tail_local)@A for name in palette],np.float32)
     np.savez(io_path(out/'preview.npz'),**payload)
     frames=np.lib.format.open_memmap(io_path(out/'preview-frames.npy'),mode='w+',dtype='float32',shape=(n,len(palette)+1,4,4))
     C=np.eye(4);C[:3,:3]=A.T
@@ -229,10 +235,14 @@ def main(args):
         bpy.ops.wm.open_mainfile(filepath=io_path(out/f'{kind}-rest.blend'),load_ui=False)
         from .blender_textures import extract
         extract(out)
-    elif mode=='bake':
-        from . import blender_bake
-        blender_bake.OUT=out
-        arm,keyed=blender_bake.bake(rest[0],'motion','stance')
+    elif mode in ('bake','bake_soma'):
+        if mode=='bake_soma':
+            from .blender_soma import bake
+            arm,keyed=bake(out,rest[0],Path(rest[1]),Path(rest[2]) if len(rest)>2 else None)
+        else:
+            from . import blender_bake
+            blender_bake.OUT=out
+            arm,keyed=blender_bake.bake(rest[0],'motion','stance')
         n=bpy.context.scene.frame_end
         preview(out,arm,keyed,n)
         Path(io_path(out/'bake.json')).write_text(json.dumps(dict(keyed_bones=keyed,frames=n,object_animation_channels=0)),encoding='utf8')

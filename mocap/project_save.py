@@ -80,6 +80,9 @@ def save_project(request, emit=lambda *a, **k: None, cancelled=lambda: False):
         raise ValueError('The project video is missing. Restore it before saving a copy.')
     media_internal = source is not None and media.is_relative_to(source)
     relative_media = media.relative_to(source).as_posix() if media_internal else 'media/' + media.name
+    session_face = media.parent / 'face_capture' if source is None else None
+    if session_face is not None and not (session_face / 'meta.json').is_file():
+        session_face = None
     staging = target.parent / ('.' + target.name + '.saving-' + uuid.uuid4().hex)
     def check():
         if cancelled():
@@ -117,6 +120,9 @@ def save_project(request, emit=lambda *a, **k: None, cancelled=lambda: False):
                 total += stamp.st_size
         if not media_internal:
             total += media.stat().st_size
+        if session_face is not None:
+            for path, stamp in files(session_face):
+                total += stamp.st_size
         if shutil.disk_usage(target.parent).free < total + 64 * 1024**2:
             raise OSError('Not enough free space to save this project.')
         check()
@@ -126,6 +132,9 @@ def save_project(request, emit=lambda *a, **k: None, cancelled=lambda: False):
                 copy_file(path, staging / path.relative_to(source), stamp)
         if not media_internal:
             copy_file(media, staging / relative_media, media.stat())
+        if session_face is not None:
+            for path, stamp in files(session_face):
+                copy_file(path, staging / 'face_capture' / path.relative_to(session_face), stamp)
         if not source:
             from . import video
             from .project_workspace import create

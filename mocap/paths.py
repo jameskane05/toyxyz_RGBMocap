@@ -13,5 +13,8 @@ COMPAT = ROOT / "native_compat"
 
 
 def worker_command(stage: str, *args: str) -> list[str]:
+    if stage in ('gemx_reconstruct', 'gemx_correct'):
+        from .gemx_runtime import command as gemx_command
+        return gemx_command(stage, args)
     from .runtime_registry import command
     return command(ROOT, stage, args, frozen=bool(getattr(sys, "frozen", False)))

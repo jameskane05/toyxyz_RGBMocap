@@ -58,7 +58,8 @@ characters can be exported again to use the corrected FBX rest-pose handling.
 Known humanoid mappings are automatic; custom bone mapping is not yet available.
 Files missing required body bones are rejected with a message. The viewport shows
 base-color textures at their original resolution, with simplified lighting rather
-than a full material/physics renderer. Existing characters prepare a texture cache
+than a full material/physics renderer. Soft alpha masks, such as eyelashes, blend
+over the face instead of being drawn solid. Existing characters prepare a texture cache
 in the background on first display; reimporting or retargeting is not required.
 Textures are reused during playback. Oversized textures produce a clear error
 instead of being silently reduced in resolution.
@@ -169,27 +170,35 @@ need an offline copy; keep a backup of manually acquired restricted models.
 
 ## Live session
 
-The **Session** panel records the Quest Pro and the iPhone together. The Face
-Mocap app already installed on the Quest connects to this PC by itself and drives
-the character's face while it is open. The address in the viewport is the browser
-fallback, and the iPhone app. **Record** (on the PC, the Quest, or the iPhone)
-starts one take: face tracking from the headset, full-resolution video from the
-phone, and the selected microphone. **Stop** saves the take.
+The **Session** panel records the Quest Pro and a phone camera together. The Face
+Mocap app on the Quest connects to this PC by itself and drives the character's
+face while it is open. The address in the viewport is the Quest browser fallback. Opening that same
+address in Safari on the iPhone loads the portrait camera page, which streams
+1080×1920. **Record** (on the PC, the Quest, or that page) starts one take:
+face tracking from the headset, phone video, and the selected microphone.
+**Stop** saves the take.
 **Reconstruct 3D** runs body tracking afterward; it does not run during the take.
 
 Drag the timeline selection, then **Crop session** to keep that range for the
 video, face, and audio together. The uncropped take stays in the session's
 `full` folder. **Save clip** writes that same range as a separate clip without
-changing the full session.
+changing the full session. On the **Audio** track, drag across the waveform
+to select a stretch, including a garble in the middle. **Delete** removes that
+stretch and leaves silence, so the rest of the recording stays lined up with
+the picture. Drag the yellow highlight to move that piece. Drag a clip's edges
+to trim it, and press **K** to cut at the playhead. **Reset Trim** restores
+the video range and the whole recording.
 
 **ElevenLabs** in the same panel fetches your voices and generates a replacement
-track from the recorded audio. The original recording remains available through
-**Use original audio**. The API key stays in this installation's local settings.
+track from the recorded audio. **Normalize** raises a quiet take to a steady level,
+and **Compress** evens out loud and quiet parts, on a copy sent to ElevenLabs.
+The saved recording is left as it is. The original recording remains available in
+the playback list. The API key stays in this installation's local settings.
 
 ## Start here
 
 1. **File → Open Video**, or drop a video into the workspace.
-2. Optionally trim the timeline's **Video** track by dragging its ends.
+2. Optionally trim the timeline's **Video** track by dragging its ends. On the **Audio** track, drag to select a stretch, then Delete it or drag the highlight to move it. The picture and motion keep their length.
 3. Choose an **AI Motion Model**, then use **Model Manager** to prepare its files.
 4. For several people, use **Find person** and check who to reconstruct.
 5. Click **Reconstruct 3D**. Review the video, mesh and **Bone Overlay** together.
@@ -225,11 +234,19 @@ opening a project restores its saved model. **Prepare Preview**, below
 | **ExMR** | Generally fast, with good overall motion quality. | Included. |
 | **FlowHMR** | Slow, but the best overall motion quality in our tests. | Included. |
 | **GVHMR** | Lowest overall quality in our tests, but sometimes better for unusual poses such as backflips. | Optional **HandFlow**; not inferred by GVHMR itself. |
+| **GEM-X** | Fixed camera, one person, clips up to 60 seconds. Native SOMA, 77 joints, no SMPL. Quality on this fork has not been compared with the three models above. | Included. |
 
-All three support people selection, contact correction, a 52-bone overlay and
+All three SMPL models support people selection, contact correction, a 52-bone overlay and
 FBX export. The viewport shows the selected source mesh: SMPL-X for ExMR/GVHMR,
 SMPL-H for FlowHMR. The export skeleton follows that motion; source estimation
 errors can remain.
+
+**GEM-X** is optional. Close the app and run `Setup_GEMX.cmd` after `install.cmd`.
+It reuses the ExMR Python and keeps its own packages. Then prepare its nine files
+in Model Manager and accept the upstream terms before downloading. Find person
+stays off: GEM-X follows the primary person in one fixed-camera video. Correction
+and FBX export use that native SOMA result. `install.cmd` and `update.cmd` do
+not install it.
 
 ## Recorded processing time and VRAM
 
@@ -340,6 +357,7 @@ selected result is missing, reconstruct it; the app reports it as unavailable.
 | **GVHMR → HandFlow** | Add finger tracking while preserving the selected body and wrist motion. Requires additional weights and MANO. |
 | **Analyze 2D** | Prepare GVHMR refinement observations separately. Reconstruct 3D includes this step when needed. |
 | **Resource Mode** | Automatic balances speed and available memory. Low Memory uses smaller image batches while retaining inference quality. |
+| **Debug Videos** | Save person-tracking and 2D-skeleton videos in the take's `debug` folder while Reconstruct 3D or Analyze 2D runs. Motion results are unchanged. FlowHMR writes the skeleton video when body features are extracted. |
 | **Prepare Preview** | Rebuild mesh/skeleton previews from existing motion without running the AI model again. Useful for older projects. |
 | **Cancel Job** | Stop queued processing; completed results are kept. |
 
@@ -397,7 +415,7 @@ an estimate and can leave residual sliding or penetration.
 | **Name** | Show list names above visible people and imported characters. Text stays upright and the same screen size as you move the camera. Rename a person from the list's right-click menu. |
 | **Timeline ruler / blue frame box** | Click or drag to seek. Track editing does not seek. Wheel zooms; middle drag or Shift+wheel pans. |
 | **Playback / frame number / speed** | Space plays/pauses; arrows step one frame, Shift+arrows one second. Enter a frame number to jump. Playback speed affects preview only. |
-| **Timeline Frame All / Reset Trim** | Fit the full timeline / restore the full clip range. |
+| **Timeline Frame All / Reset Trim** | Fit the full timeline / restore the full video range and the full audio track. |
 
 Checked people are processed independently and shown in a shared scene. They
 share correction mode/floor; timings and pelvis offsets remain per person/take.

@@ -4,10 +4,11 @@ from .console_log import ConsoleLog
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QWidget, QFrame, QLabel, QPushButton, QComboBox, QCheckBox,
-    QVBoxLayout, QHBoxLayout, QGroupBox, QSplitter, QScrollArea,
-    QSpinBox, QDoubleSpinBox, QProgressBar, QTextEdit, QLineEdit, QMessageBox, QSizePolicy, QStackedWidget)
+    QVBoxLayout, QHBoxLayout, QGroupBox, QSplitter, QScrollArea, QButtonGroup,
+    QSpinBox, QDoubleSpinBox, QProgressBar, QTextEdit, QLineEdit, QMessageBox, QSizePolicy, QStackedWidget, QTabWidget)
 from .viewer import VideoView, MotionView
 from .timeline import TimelineSlider
+from .face_graph import FaceGraph
 from .motion_tools import MOTION_TOOLS
 from .paths import ROOT
 from .correction_settings import PRESETS
@@ -126,6 +127,24 @@ def build_workspace(w):
     w.fps_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
     w.fps_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
     video_header.addWidget(w.fps_label, 1)
+    w.view_feed = QComboBox()
+    w.view_feed.addItem('Live', 'live')
+    w.view_feed.addItem('Take', 'take')
+    w.view_feed.setToolTip(tooltip_text('Live shows the phone camera. Take shows the opened recording. Play and the timeline move the character either way.'))
+    video_header.addWidget(w.view_feed)
+    w.capture_mic = QComboBox()
+    w.capture_mic.setMinimumWidth(180)
+    w.capture_mic.addItem('iPhone camera microphone', 'phone')
+    video_header.addWidget(w.capture_mic)
+    video_header.addWidget(QLabel('Play'))
+    w.capture_output = QComboBox()
+    w.capture_output.setMinimumWidth(160)
+    w.capture_output.setToolTip(tooltip_text('Speakers used when you play a take.'))
+    video_header.addWidget(w.capture_output)
+    w.capture_record = QPushButton('Record')
+    w.capture_record.setObjectName('primary')
+    w.capture_record.setToolTip(tooltip_text('Record the connected iPhone and the Quest. Record on the phone starts the same take.'))
+    video_header.addWidget(w.capture_record)
     overlay = QCheckBox("Overlays")
     overlay.setChecked(True)
     overlay.setToolTip(tooltip_text('Show tracked people and detected body points over the video. Display only.'))
@@ -143,7 +162,7 @@ def build_workspace(w):
     w.face_url.setMinimumWidth(220)
     w.face_url.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
     w.face_url.setFocusPolicy(Qt.StrongFocus)
-    w.face_url.setToolTip(tooltip_text('The Face Mocap app on the Quest connects automatically. This address is the browser fallback: accept the certificate, then tap Enter MR. Click to select, then Ctrl+C or use Copy.'))
+    w.face_url.setToolTip(tooltip_text('RGB Face on the Quest and RGB Capture on the iPhone connect to this address. Click to select, then Ctrl+C or use Copy.'))
     motion_header.addWidget(w.face_url, 1)
     w.face_live_badge = QLabel('')
     w.face_live_badge.setObjectName('muted')
@@ -154,7 +173,7 @@ def build_workspace(w):
     motion_header.addWidget(w.copy_face_url)
     w.bone_overlay=QCheckBox('Bone Overlay')
     w.bone_overlay.setChecked(True)
-    w.bone_overlay.setToolTip(tooltip_text('Show the skeleton used for FBX export over the motion mesh. Display only.'))
+    w.bone_overlay.setToolTip(tooltip_text('Show the imported character skeleton, and the export skeleton while a person is visible. Display only.'))
     w.bone_overlay.toggled.connect(w.render_changed)
     motion_header.addWidget(w.bone_overlay)
     w.view_choice = QComboBox()
@@ -181,7 +200,7 @@ def build_workspace(w):
         check.setToolTip(tooltip_text({'show_grid': 'Show the reference grid at height zero. Does not change ground contact.', 'show_correction_floor': 'Show the correction floor height as an orange plane. Display only.', 'show_trajectory': 'Show the path followed by the person.', 'show_foot_locks': '', 'show_names': 'Show each person\'s name above their mesh. Rename people by right-clicking the People list. Display only.'}[attribute]))
         if attribute=='show_names':w.name_labels=check
         if attribute=='show_foot_locks':
-            check.setToolTip(tooltip_text('Show active foot and hand contacts as colored discs. Colors match the timeline. Display only; does not enable correction.'))
+            check.setToolTip(tooltip_text('Show active foot and hand contacts as colored discs, including when the person is hidden and only a character is shown. Colors match the timeline. Display only; does not enable correction.'))
         def toggle(enabled, attr=attribute):
             setattr(w.motion_view, attr, enabled)
             w.motion_view.update()
@@ -208,9 +227,25 @@ def build_workspace(w):
     w.slider.contacts_edit_started.connect(w.stop_playback)
     w.slider.contacts_changed.connect(w.foot_contacts_changed)
     w.slider.contacts_reset.connect(w.reset_foot_contacts)
-    timeline_panel, timeline_header = editor("Timeline", w.slider)
+    w.timeline_stack = QStackedWidget()
+    w.timeline_stack.addWidget(w.slider)
+    w.face_graph = FaceGraph(w.slider)
+    w.timeline_stack.addWidget(w.face_graph)
+    timeline_panel, timeline_header = editor("Timeline", w.timeline_stack)
     w.timeline_panel = timeline_panel
-    timeline_panel.setMinimumHeight(260)
+    timeline_panel.setMinimumHeight(300)
+    title = timeline_header.itemAt(0).widget()
+    timeline_header.removeWidget(title)
+    title.deleteLater()
+    w.timeline_tab = QPushButton('Timeline')
+    w.graph_tab = QPushButton('Graph')
+    for tab in (w.timeline_tab, w.graph_tab):
+        tab.setCheckable(True)
+        tab.setObjectName('timelineTab')
+    w.timeline_tab.setToolTip('Video, audio, and contact timing.')
+    w.graph_tab.setToolTip('Curves for the face channels that moved in this take.')
+    timeline_header.insertWidget(0, w.timeline_tab)
+    timeline_header.insertWidget(1, w.graph_tab)
     w.timeline_help_dialog = QMessageBox(w)
     w.timeline_help_dialog.setWindowTitle("Timeline Help")
     w.timeline_help_dialog.setTextFormat(Qt.PlainText)
@@ -219,7 +254,20 @@ def build_workspace(w):
         "The thin playhead line does not capture clicks.\n"
         "Wheel: zoom | Shift + wheel or MMB: pan\n\n"
         "Video clip edges: trim the playback and reconstruction range.\n"
-        "Frame All: fit the full timeline | Reset Trim: restore the full clip.\n\n"
+        "Audio: drag across the waveform to select a stretch.\n"
+        "Delete removes that stretch and leaves silence, so later words stay in sync.\n"
+        "Drag the yellow highlight to move that audio. Drag a clip edge to trim it.\n"
+        "K cuts the clip at the playhead. Reset Trim restores the whole recording.\n"
+        "Frame All: fit the full timeline | Reset Trim: restore the full video and audio.\n\n"
+        "Graph: curves for the face channels that moved in the take.\n"
+        "Check a channel to show it. Select a channel to edit it. Only selected hides the rest.\n"
+        "I inserts keys at the playhead and matches the recording until a key is moved.\n"
+        "Drag keys to reshape. Shift locks the drag to one axis. Delete removes keys.\n"
+        "Right-click a key for Auto Clamped, Linear, Constant, or Free handles.\n"
+        "Wheel zooms time. Ctrl + wheel zooms the value. Shift + wheel or MMB pans.\n"
+        "Frame Selected fits the selected keys. Reset Channel and Reset All restore the recording.\n"
+        "Between the first and last key, the curve replaces the recording. Outside it, the recording holds.\n"
+        "Ctrl+Z / Ctrl+Shift+Z undo curve edits while the graph is focused.\n\n"
         "L/R foot and L/R hand: drag empty space to add a lock.\n"
         "Drag a lock to move it; drag its edges to resize it.\n"
         "Double-click empty space to add a short lock.\n"
@@ -232,7 +280,7 @@ def build_workspace(w):
     w.timeline_help_button.setAccessibleName("Timeline Help")
     w.timeline_help_button.setToolTip('Show how to seek, trim and edit contact timings.')
     w.timeline_help_button.clicked.connect(w.timeline_help_dialog.open)
-    timeline_header.insertWidget(1, w.timeline_help_button)
+    timeline_header.insertWidget(2, w.timeline_help_button)
     timeline_header.addStretch()
     first = button("|<", lambda: w.step_frames(-w.slider.maximum()), timeline_header)
     first.setObjectName("transport")
@@ -281,11 +329,46 @@ def build_workspace(w):
     action_bar.addWidget(w.clip_label, 1)
     w.reset_footlocks_button=button('Reset Locks',w.reset_foot_contacts,action_bar)
     w.reset_footlocks_button.setToolTip(tooltip_text('Restore automatic foot and hand contact timings for this person. Click Apply Correction to update the motion.'))
-    w.timeline_frame_all_button = button("Frame All", w.slider.frame_all, action_bar)
+    w.timeline_frame_all_button = button("Frame All", lambda: w.frame_editor(), action_bar)
     w.timeline_frame_all_button.setToolTip('Fit the full clip in the timeline.')
-    w.reset_trim_button = button("Reset Trim", w.slider.reset_trim, action_bar)
-    w.reset_trim_button.setToolTip(tooltip_text("Restore the full clip for playback and reconstruction"))
+    w.graph_frame_selected = button('Frame Selected', w.face_graph.frame_selected, action_bar)
+    w.graph_frame_selected.setToolTip('Fit the selected face keys.')
+    w.graph_only_selected = QCheckBox('Only selected')
+    w.graph_only_selected.setChecked(True)
+    w.graph_only_selected.setToolTip('Show curves for the channels selected in the list.')
+    w.graph_only_selected.toggled.connect(w.face_graph.set_only_selected)
+    action_bar.addWidget(w.graph_only_selected)
+    w.graph_reset_channel = button('Reset Channel', w.face_graph.reset_selected, action_bar)
+    w.graph_reset_channel.setToolTip('Remove keys on the selected channels and use the recording.')
+    w.graph_reset_all = button('Reset All', w.face_graph.reset_all, action_bar)
+    w.graph_reset_all.setToolTip('Remove every face curve and use the recording.')
+    w.reset_trim_button = button("Reset Trim", w.reset_timeline_trim, action_bar)
+    w.reset_trim_button.setToolTip(tooltip_text("Restore the full video range and the full audio track"))
     timeline_panel.layout().insertWidget(1, actions)
+    def show_timeline_page(index):
+        graph = index == 1
+        w.timeline_stack.setCurrentIndex(index)
+        for widget in (w.graph_only_selected, w.graph_frame_selected, w.graph_reset_channel, w.graph_reset_all):
+            widget.setVisible(graph)
+        w.reset_footlocks_button.setVisible(not graph)
+        w.reset_trim_button.setVisible(not graph)
+        w.timeline_frame_all_button.setToolTip('Fit the full clip.' if graph else 'Fit the full clip in the timeline.')
+        if graph:
+            w.face_graph.setFocus()
+            w.face_graph.refresh()
+    def frame_editor():
+        if w.timeline_stack.currentIndex() == 1:
+            w.face_graph.frame_all()
+        else:
+            w.slider.frame_all()
+    w.frame_editor = frame_editor
+    pages = QButtonGroup(w)
+    pages.setExclusive(True)
+    pages.addButton(w.timeline_tab, 0)
+    pages.addButton(w.graph_tab, 1)
+    pages.idClicked.connect(show_timeline_page)
+    w.timeline_tab.setChecked(True)
+    show_timeline_page(0)
     def frame_range(_, maximum):
         w.frame_number.setMaximum(maximum + 1)
     w.slider.rangeChanged.connect(frame_range)
@@ -299,8 +382,6 @@ def build_workspace(w):
 
     sidebar = QWidget()
     sidebar.setObjectName("modelSidebar")
-    sidebar.setMinimumWidth(235)
-    sidebar.setMaximumWidth(330)
     side_layout = QVBoxLayout(sidebar)
     side_layout.setContentsMargins(4, 0, 4, 0)
     side_layout.setSpacing(7)
@@ -456,6 +537,9 @@ def build_workspace(w):
     correction.addWidget(w.preview_help)
     w.correction_note=WrappedLabel();w.correction_note.setObjectName('muted');w.correction_note.setWordWrap(True)
     w.correction_note.hide();correction.addWidget(w.correction_note)
+    w.arm_clearance=QCheckBox('Keep Character Arms Outside Clothing');w.arm_clearance.setChecked(True)
+    w.arm_clearance.setToolTip(tooltip_text('When retargeting to a character, rotate its shoulders just enough to keep hands and forearms out of its own torso, legs and clothing. Uses the character mesh, so results differ per character. Applies the next time characters are retargeted. Not used for GEM-X native SOMA motion.'))
+    correction.addWidget(w.arm_clearance)
     w.motion_correction.toggled.connect(w.refinement_changed)
     w.correction_mode.currentIndexChanged.connect(w.correction_settings_changed)
     w.correction_preset.currentIndexChanged.connect(w.correction_settings_changed)
@@ -470,6 +554,10 @@ def build_workspace(w):
     w.compute_mode.addItem("Low Memory", "low_memory")
     w.compute_mode.setToolTip(tooltip_text("Automatic balances speed and available memory. Low Memory processes smaller image batches while keeping the same motion quality."))
     processing.addWidget(w.compute_mode)
+    w.debug_videos = QCheckBox('Debug Videos')
+    w.debug_videos.setToolTip(tooltip_text('Save overlay videos of person tracking and the 2D skeleton while Reconstruct 3D or Analyze 2D runs. Files are written in the take\'s debug folder as tracking.mp4 and skeleton.mp4. Motion results stay the same. The skeleton is ExMR body, hand and foot points, GVHMR joint observations, or Analyze 2D points when those are the only skeleton. FlowHMR saves its skeleton from body points captured during feature extraction; a reused feature result has no skeleton video until features run again.'))
+    w.debug_videos.toggled.connect(w.save_debug_videos)
+    processing.addWidget(w.debug_videos)
     resource_description=TooltipHelp('',w.compute_mode)
     resource_description.setObjectName('muted');resource_description.setWordWrap(True);processing.addWidget(resource_description)
     setup = group("GVHMR Models", settings)
@@ -508,8 +596,22 @@ def build_workspace(w):
     w.cancel_button.setEnabled(False)
     side_layout.addWidget(w.model_actions)
     w.model_choice.currentIndexChanged.connect(w.select_model)
-    main.addWidget(sidebar)
-    main.setSizes([1120, 260])
+    tabs = QTabWidget()
+    tabs.setObjectName("settingsTabs")
+    tabs.setDocumentMode(True)
+    tabs.setMinimumWidth(300)
+    tabs.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+    tabs.addTab(sidebar, "Mocap")
+    w.session_host = QWidget()
+    w.session_host.setObjectName("modelSidebar")
+    tabs.addTab(w.session_host, "Voice")
+    w.capture_host = QWidget()
+    w.capture_host.setObjectName("modelSidebar")
+    tabs.addTab(w.capture_host, "Capture")
+    w.settings_tabs = tabs
+    main.addWidget(tabs)
+    main.setCollapsible(1, False)
+    main.setSizes([980, 420])
     main.setStretchFactor(0, 1)
     main.setStretchFactor(1, 0)
     root.addWidget(main, 1)
@@ -540,9 +642,11 @@ def build_workspace(w):
     root.addWidget(w.log)
 
     file_menu = w.menuBar().addMenu("File")
-    w.open_actions = [file_menu.addAction("Open Video...", w.choose_video), file_menu.addAction("Open Project...", w.choose_project)]
+    w.new_project_action = file_menu.addAction("New Project", w.new_project)
+    w.new_project_action.setShortcut("Ctrl+N")
+    w.open_actions = [w.new_project_action, file_menu.addAction("Open Video...", w.choose_video), file_menu.addAction("Open Project...", w.choose_project)]
     w.import_character_action=file_menu.addAction('Import Character...',w.choose_character)
-    w.import_character_action.setToolTip('Import a Mixamo FBX, VRM or PMX humanoid. Right-click its People row to retarget a source person.')
+    w.import_character_action.setToolTip('Import a Mixamo FBX, VRM or PMX humanoid into the character library. Choose it later without importing again. Right-click its People row to retarget a source person.')
     w.import_face_action=file_menu.addAction('Import Face Capture...')
     w.import_face_action.setToolTip('Import a face-mocap JSON recording. A sibling .audio.mp3/.wav is copied automatically.')
     w.import_face_audio_action=file_menu.addAction('Import Face Audio...')
@@ -555,13 +659,22 @@ def build_workspace(w):
     file_menu.addSeparator()
     w.export_action = file_menu.addAction("Export FBX...", w.save_fbx)
     w.export_action.setToolTip(tooltip_text('Save the displayed skeleton animation as FBX. For multiple people, each checked person gets a separate named file and rig.'))
+    w.export_guii_action = file_menu.addAction('Export Guii Take...', w.export_guii)
+    w.export_guii_action.setToolTip(tooltip_text('Save the retargeted character, face, and selected voice as a take the Guii holodrone can play.'))
     file_menu.addAction("Open Project Folder", w.open_folder)
     file_menu.addSeparator()
     file_menu.addAction("Exit", w.close)
+    edit_menu = w.menuBar().addMenu("Edit")
+    w.undo_recording_action = edit_menu.addAction('Undo Recording', w.undo_recording)
+    w.undo_recording_action.setShortcut('Ctrl+Z')
+    w.undo_recording_action.setToolTip(tooltip_text('Reopen what was open before the last recording. The new recording is kept in projects/sessions; Redo Recording reopens it.'))
+    w.redo_recording_action = edit_menu.addAction('Redo Recording', w.redo_recording)
+    w.redo_recording_action.setShortcut('Ctrl+Shift+Z')
+    w.undo_recording_action.setEnabled(False);w.redo_recording_action.setEnabled(False)
     help_menu = w.menuBar().addMenu("Help")
     w.check_system_action = help_menu.addAction("Check System", lambda: w.start_jobs([("diagnose", [])]))
     help_menu.addAction("Controls", lambda: QMessageBox.information(w, "Workspace Controls",
-        "Space: Play / Pause\nLeft / Right: Step one frame\nShift + Left / Right: Step one second\nHome / End: First / last frame\n\nViewport: LMB orbit, MMB / RMB pan, wheel zoom\nGizmo: click an axis to align the view\nTimeline: drag video clip edges to trim\nClick the frame ruler or drag the blue frame box to seek\nWheel to zoom; MMB to pan; Reset Trim restores the full clip\nClick ? in the timeline header for editing help.\nPlayback and reconstruction use the selected video clip range.\n\nThe mesh shows the selected motion result.\nFlowHMR and ExMR track fingers directly. GVHMR uses optional HandFlow for finger tracking.\nUse File > Export FBX to save the displayed animation."))
+        "Space: Play / Pause\nLeft / Right: Step one frame\nShift + Left / Right: Step one second\nHome / End: First / last frame\n\nViewport: LMB orbit, MMB / RMB pan, wheel zoom\nGizmo: click an axis to align the view\nTimeline: drag video clip edges to trim playback and reconstruction. The Graph tab edits recorded face curves.\nAudio: drag to select, Delete to remove, drag the highlight to move. K cuts at the playhead\nClick the frame ruler or drag the blue frame box to seek\nWheel to zoom; MMB to pan; Reset Trim restores the full video and audio\nClick ? in the timeline header for editing help.\nPlayback and reconstruction use the selected video clip range.\n\nThe mesh shows the selected motion result.\nFlowHMR and ExMR track fingers directly. GVHMR uses optional HandFlow for finger tracking.\nUse File > Export FBX to save the displayed animation."))
 
     menu_help = {
         'Import Face Capture...': 'Import a face-mocap JSON file (52 ARKit blendshapes). A sibling audio file is copied when present.',
@@ -571,6 +684,7 @@ def build_workspace(w):
         'Stop Face Listen': 'Stop the local Quest Pro face receiver.',
         'Save Live Face Capture': 'Write received live frames into this project.',
         'Face / Audio Offset...': 'Shift face and audio relative to the video clock.',
+        'New Project': 'Leave the open video and motion so the Quest drives the character live. The saved project stays on disk.',
         'Open Video...': 'Choose a video to create motion from.',
         'Open Project...': 'Open saved motion and settings without reconstructing the video.',
         'Open Project Folder': 'Open the current project folder in File Explorer.',

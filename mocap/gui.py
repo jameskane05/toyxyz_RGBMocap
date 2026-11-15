@@ -11,7 +11,7 @@ import time
 from PySide6.QtCore import QElapsedTimer, QEvent, QProcess, QProcessEnvironment, QTimer, Qt, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QKeySequence, QShortcut, QTextOption
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QFileDialog,
-    QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QProgressBar, QPushButton,
+    QFrame, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMessageBox, QProgressBar, QPushButton,
     QSplitter, QTableWidget, QTableWidgetItem, QTextBrowser, QTextEdit, QVBoxLayout, QWidget)
 
 from .models import MODELS_LIST, import_body_model, missing, ready
@@ -22,6 +22,7 @@ from .playback import playback_frame, PlaybackTimerResolution
 from .timeline import TimelineSlider
 from .preview_data import PreviewDataLoader, project_signature
 from .motion_tools import MOTION_TOOLS, selected_export, RESULTS, result_kind, result_options, result_is_current, base_result, body_result, has_handflow
+from .gemx_ui import GemXWorkspace
 
 STAGES = {"prepare": "Prepare Video", "track": "Track Actor", "pva": "Analyze 2D", "gvhmr": "Initial 3D Reconstruction", "refine": "Refine Motion", "export": "Export", "download": "Model Manager", "diagnose": "Check System"}
 
@@ -40,6 +41,7 @@ STAGES['save_project']='Save Project As'
 STAGES.update(people='Find People',person='Prepare Person Motion')
 STAGES.update(flow_camera='Estimate Scene Camera / VGGT-Omega', flow_features='Extract Body and Hand Features / SAM', flowhmr='Reconstruct Motion / FlowHMR', flow_export='Prepare FlowHMR Preview and FBX', import_model='Import Model')
 STAGES.update(exmr_preprocess='ExMR Body, Hand and Foot Keypoints',exmr_features='ExMR Body and Hand Features',exmr='Reconstruct Motion / ExMR')
+STAGES.update(gemx_reconstruct='Reconstruct Motion / GEM-X',gemx_correct='Motion Correction / GEM-X')
 
 class ModelDownloadDialog(QDialog):
     """Readable, selectable provider instructions with bounded scrolling."""
@@ -121,7 +123,8 @@ class ModelsDialog(QDialog):
         self.window = window
         self.tool = MOTION_TOOLS[tool_key or window.model_choice.currentData()]
         from .models import STAGE_REQUIREMENTS
-        keys = {key for stage in (*self.tool.stages(refine=True, footmr=True, handflow=True),'people') for key in STAGE_REQUIREMENTS.get(stage, ())}
+        keys = ({key for key in STAGE_REQUIREMENTS['gemx_assets']} if self.tool.key=='gemx' else
+                {key for stage in (*self.tool.stages(refine=True, footmr=True, handflow=True),'people') for key in STAGE_REQUIREMENTS.get(stage, ())})
         # Keep public automatic downloads together, followed by manual-only files.
         # Stable sorting preserves the existing component order within each group.
         self.models = sorted((model for model in MODELS_LIST if model.key in keys),
@@ -132,6 +135,21 @@ class ModelsDialog(QDialog):
         description = QLabel(f"Models for {self.tool.label} and compatible add-ons.\nUse Auto Download for public files, or Manual Download and Import for any model.\nRegistered body model files are not redistributed by this app.")
         description.setWordWrap(True)
         layout.addWidget(description)
+        if self.tool.key=='gemx':
+            from .gemx_runtime import configuration
+            try:
+                configuration()
+            except RuntimeError as error:
+                message=str(error)
+            else:
+                message='GEM-X runtime is ready.'
+            note=QLabel(message+' Download All prepares nine files. Review the upstream terms before downloading. '
+                '<a style="color:#8ed2ff" href="https://huggingface.co/nvidia/GEM-X">GEM-X</a> · '
+                '<a style="color:#8ed2ff" href="https://huggingface.co/nvidia/SOMA-X">SOMA-X</a> · '
+                '<a style="color:#8ed2ff" href="https://github.com/open-mmlab/mmpose/tree/main/projects/rtmpose">Detector</a>')
+            note.setWordWrap(True)
+            note.setOpenExternalLinks(True)
+            layout.addWidget(note)
         self.table = QTableWidget(len(self.models), 3)
         self.table.setHorizontalHeaderLabels(["Model", "Status", "Action"])
         self.table.horizontalHeader().setStretchLastSection(True)
@@ -322,7 +340,7 @@ from .character_ui import CharacterWorkspace
 from .face_ui import FaceWorkspace
 from .session_ui import SessionWorkspace
 
-class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspace,ProjectSaving,PeopleWorkspace,QMainWindow):
+class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspace,ProjectSaving,PeopleWorkspace,GemXWorkspace,QMainWindow):
     def __init__(self, video: Path | None = None):
         super().__init__()
         self.setWindowTitle("RGB MoCap | Motion Workspace")
@@ -351,6 +369,8 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
         self.current_stage = None
         self._batch_started_at = None
         self._batch_has_motion = False
+        self._batch_retargets = False
+        self._auto_retarget = None
         from .task_progress import TaskProgress
         self.task_state=TaskProgress()
         self._task_manifests={};self._queued_task_estimates=[]
@@ -408,9 +428,11 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
     def update_readiness(self):
         if hasattr(self,'character_loader'):self.sync_characters()
         if hasattr(self,'reload_face'):self.reload_face()
+        if hasattr(self,'_record_undo'):self._sync_record_undo()
         self.update_people_readiness()
         tool = MOTION_TOOLS[self.model_choice.currentData()]
         self.compute_mode.setEnabled(not self.busy)
+        self.debug_videos.setEnabled(not self.busy)
         stages = tool.stages(self.htd_refine.isChecked(), self.footmr_refine.isChecked(), handflow=self.handflow_refine.isChecked())
         from .models import STAGE_REQUIREMENTS, BY_KEY
         required = {key for stage in stages for key in STAGE_REQUIREMENTS.get(stage, ())}
@@ -437,8 +459,9 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
         flat=self.correction_mode.currentData()=='flat'
         self.auto_floor.setEnabled(not self.busy and flat)
         self.floor_height.setEnabled(not self.busy and flat and not self.auto_floor.isChecked())
-        self.correction_button.setEnabled(not self.busy and not self.contact_saving and self.project is not None and
-            (self.project/RESULTS[base_result(self.active_result)][0]).exists())
+        source_ready=(result_is_current(self.project,'initial') if tool.key=='gemx'
+            else (self.project/RESULTS[base_result(self.active_result)][0]).exists()) if self.project is not None else False
+        self.correction_button.setEnabled(not self.busy and not self.contact_saving and source_ready)
         self.slider.trim_enabled = not self.busy and self.info is not None
         self.slider.contact_edit_enabled=not self.busy and not self.contact_saving and self.motion_correction.isChecked() and self.slider.contacts_available
         self.slider.contact_track_enabled=(self.foot_lock.isChecked(),)*2+(self.hand_lock.isChecked(),)*2
@@ -462,6 +485,7 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
         self.exmr_smoothing.setEnabled(not self.busy)
         self.analyze_button.setVisible(tool.key=='gvhmr')
         self.sync_correction_floor_preview()
+        self.sync_gemx_controls()
 
     def sync_correction_floor_preview(self):
         self.motion_view.correction_floor_applicable=self.correction_mode.currentData()=='flat'
@@ -511,7 +535,11 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
             if self.model_pages.widget(index).property("motion_tool") == tool.key:
                 self.model_pages.setCurrentIndex(index)
                 break
-        self.model_pages.setVisible(tool.key!='gvhmr')
+        if tool.key!='gemx':
+            from .people_ui import PEOPLE_HELP
+            self.find_person_button.show()
+            self.people_help_dialog.setText(PEOPLE_HELP)
+        self.model_pages.setVisible(tool.key not in ('gvhmr','gemx'))
         self.htd_refine.setVisible(bool(tool.refinement))
         self.refine_description.setVisible(bool(tool.refinement))
         self.footmr_refine.setVisible(tool.key == "gvhmr")
@@ -549,6 +577,7 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
         self.motion_view.update()
 
     def preview_preparation_available(self):
+        if self.model_choice.currentData()=='gemx':return False
         if self.project is None or self.busy or self.contact_saving:return False
         if not (self.project/RESULTS[base_result(self.active_result)][0]).is_file():return False
         info=self.contact_tracks.get(base_result(self.active_result),{})
@@ -560,6 +589,7 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
                 and result_is_current(self.project,self.active_result))
 
     def prepare_target_preview(self):
+        if self.model_choice.currentData()=='gemx':return
         if self.project is None or self.busy or self.contact_saving:return
         from .mixamo_data import current
         projects=[self.project]
@@ -602,6 +632,76 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
         self.request_people_scene()
         self.update_readiness()
 
+    def new_project(self):
+        if self.busy or self.contact_saving:
+            return
+        if hasattr(self, '_session_active') and self._session_active():
+            self.status.setText('Stop the recording before starting a new project.')
+            return
+        if any(info.get('unsaved') for info in self.contact_tracks.values()):
+            self.status.setText('Save the contact timing successfully before starting a new project.')
+            return
+        self.stop_playback()
+        if self.workspace_root is not None:
+            try:
+                self.remember_workspace_model()
+            except (OSError, ValueError) as error:
+                self.log.append('Could not save project view: ' + str(error))
+        kept = []
+        for character in getattr(self, 'characters', []):
+            if not character.get('library_id'):
+                continue
+            kept.append(dict(id=character['id'], library_id=character['library_id'],
+                name=character.get('name') or 'Character', kind=character.get('kind') or 'mixamo',
+                visible=character.get('visible', True), voice_id=character.get('voice_id'),
+                voice_name=character.get('voice_name')))
+        import uuid
+        from .paths import HOME
+        self.character_session = HOME / 'character_scenes' / uuid.uuid4().hex
+        self.character_root = self.character_session
+        self.characters = kept
+        self.character_loader.reset()
+        self.character_assets.clear()
+        self.motion_view.clear_characters()
+        if kept:
+            try:
+                self.save_characters()
+            except OSError as error:
+                self.status.setText('Cannot save characters: ' + str(error))
+            for character in kept:
+                self.request_character(character)
+        self.clear_preview()
+        self.reset_people()
+        self.workspace_root = None
+        self._workspace_video_reference = False
+        self._workspace_camera = None
+        self.project = None
+        self.video_path = None
+        self.info = None
+        self.session_dir = None
+        self.video_readable = False
+        self.source_offset = self.source_end = 0.0
+        self.motion_view.auto_fit = True
+        self.motion_view.scene_time = 0.0
+        self.video_view.blank()
+        self.slider.blockSignals(True)
+        self.slider.setRange(0, 0)
+        self.slider.blockSignals(False)
+        self.slider.reset_trim()
+        self.filename.setText('New project · live face')
+        self.fps_label.setText('No clip loaded')
+        self.setWindowTitle('RGB MoCap | Motion Workspace')
+        if hasattr(self, '_fill_clips'):
+            self._fill_clips()
+        if hasattr(self, '_select_feed'):
+            self._select_feed('live')
+        if hasattr(self, 'remember_last_open'):
+            self.remember_last_open()
+        if hasattr(self, 'refresh_character_library'):
+            self.refresh_character_library()
+        self.update_readiness()
+        self.status.setText('New project. The Quest drives the character live. Record when you are ready.')
+
     def choose_video(self):
         name, _ = QFileDialog.getOpenFileName(self, "Open Video", "", "Videos (*.mp4 *.mov *.avi *.mkv *.webm)")
         if name:
@@ -638,6 +738,8 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
             self.slider.setRange(0, 0)
             self.filename.setText(f"{path.name} · Opening video...")
             self.video_view.open(path)
+            if hasattr(self, '_select_feed'):
+                self._select_feed('take')
             self.update_readiness()
         except Exception as error:
             QMessageBox.warning(self, "Video Error", str(error))
@@ -734,11 +836,15 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
         self.motion_correction.setChecked(result.startswith('corrected_') if has_motion or saved_selection else True)
         self.motion_correction.blockSignals(False)
         self.restore_correction_options(manifest.get('correction',{}))
+        self.debug_videos.blockSignals(True)
+        self.debug_videos.setChecked(manifest.get('debug_videos') is True)
+        self.debug_videos.blockSignals(False)
         self.active_result = self.selected_result()
         self.video_path = source_video(project, manifest)
         self.video_readable = False
         fps = manifest.get("fps", 30)
-        self.info = {"fps": fps, "frames": manifest["frames"], "duration": manifest["frames"] / fps}
+        self.info = {"fps": fps, "frames": manifest["frames"], "duration": manifest["frames"] / fps,
+                     "width": manifest["width"], "height": manifest["height"]}
         self.source_offset, self.source_end = manifest["start"], manifest["end"]
         self.slider.set_media(fps)
         self.video_view.open(select_preview(project), (manifest["width"], manifest["height"]))
@@ -770,7 +876,15 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
         self.frame_number.blockSignals(False)
         if self.timer.isActive() and not self.playback_tick:
             self.reset_play_clock()
-        self.video_view.seek(index)
+        if getattr(self.video_view, 'live', False):
+            self.present_frame(index)
+        else:
+            if not self.timer.isActive():
+                self.motion_view.index = index
+                self.motion_view.scene_time = self.source_offset + index / (self.info['fps'] if self.info else 30)
+                self.sync_face_audio()
+                self.motion_view.update()
+            self.video_view.seek(index)
         fps = self.info["fps"] if self.info else 30
         total = self.info["duration"] if self.info else 0
         self.time_label.setText(f"{index/fps:05.2f} / {total:05.2f} s")
@@ -789,7 +903,7 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
             start_seconds, end_seconds = self.processing_range()
             text = f"Clip: {first + 1}–{end}  |  {end_seconds-start_seconds:.2f} s"
             self.clip_label.setText(text)
-            self.clip_label.setToolTip(tooltip_text(f"Video range: {start_seconds:.3f}–{end_seconds:.3f} s\nDrag the video track edges to trim playback and reconstruction. Existing motion files stay unchanged until you reconstruct again."))
+            self.clip_label.setToolTip(tooltip_text(f"Video range: {start_seconds:.3f}–{end_seconds:.3f} s\nDrag the video track edges to trim playback and reconstruction. Existing motion files stay unchanged until you reconstruct again.\nOn the audio track, drag to select a stretch, Delete to remove it, or drag the highlight to move it. The picture stays put."))
         else:
             self.clip_label.setText("Clip: no video")
 
@@ -841,6 +955,12 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
             self.reset_play_clock()
             self.timer.start(max(1, math.ceil(1000 / (self.info['fps'] * self.play_speed.currentData()))))
             self.set_playback_indicator(True)
+            if hasattr(self, 'face_audio') and not self.face_audio.path:
+                self.status.setText('This take has no saved microphone audio. The bar is the live microphone.')
+            elif hasattr(self, 'sync_face_audio'):
+                self.sync_face_audio()
+                if getattr(self.face_audio, 'error', ''):
+                    self.status.setText(self.face_audio.error)
 
     def next_frame(self):
         if not self.timer.isActive() or self.info is None or not self.video_readable:
@@ -886,7 +1006,28 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
             self.stop_playback()
         super().hideEvent(event)
 
+    def save_debug_videos(self, *_):
+        if not hasattr(self, 'debug_videos'):
+            return
+        enabled = self.debug_videos.isChecked()
+        from .storage import atomic_json
+        for folder in (getattr(self, 'people_root', None), self.project):
+            if folder is None:
+                continue
+            path = Path(folder) / 'project.json'
+            if not path.is_file():
+                continue
+            try:
+                state = json.loads(path.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                continue
+            if state.get('debug_videos') is enabled:
+                continue
+            state['debug_videos'] = enabled
+            atomic_json(path, state)
+
     def input_jobs(self, stages, result=None):
+        self.save_debug_videos()
         if self.video_path is None:
             self.choose_video()
             return
@@ -931,6 +1072,8 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
 
     def run_full(self):
         tool = MOTION_TOOLS[self.model_choice.currentData()]
+        if tool.key=='gemx':
+            return self.run_gemx()
         if tool.key=='exmr' and self.people_root is not None:
             from .storage import atomic_json
             path=self.people_root/'project.json';state=json.loads(path.read_text(encoding='utf-8'))
@@ -1015,6 +1158,9 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
         self.save_correction_options()
         kind=self.selected_result(True)
         self.set_active_result(kind)
+        if self.model_choice.currentData()=='gemx':
+            self.start_jobs([('gemx_correct',['--project',str(self.project),'--result','corrected_initial'])], refresh_characters=True)
+            return
         if self.people_root is not None:
             self.apply_scene_correction(kind);return
         self.start_jobs([('correct',['--result',kind]),('export',['--result',kind])], refresh_characters=True)
@@ -1089,6 +1235,8 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
                 return
         self._batch_started_at = time.monotonic()
         self._batch_has_motion = False
+        self._batch_retargets = False
+        self._auto_retarget = None
         self.task_state.reset(self._batch_started_at)
         self._task_manifests={}
         self.jobs, self.busy, self.cancelled, self.failed = list(jobs), True, False, False
@@ -1196,14 +1344,18 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
             self.update_readiness()
             if self.failed or self.cancelled:
                 self.character_refresh_queue=[]
-            else:
+            elif self.character_refresh_queue:
                 self.next_character_refresh()
+            elif self._batch_retargets:
+                self.queue_auto_retarget()
             return
         stage, arguments = self.jobs.pop(0)
         if stage in {'gvhmr', 'refine', 'footmr', 'handflow', 'correct',
                      'flow_camera', 'flow_features', 'flowhmr',
                      'exmr_preprocess', 'exmr_features', 'exmr'}:
             self._batch_has_motion = True
+        if self._batch_has_motion or stage in {'gemx_reconstruct', 'gemx_correct'}:
+            self._batch_retargets = True
         self.current_stage = stage
         if arguments is None:
             arguments = ["--project", str(self.project)]
@@ -1232,6 +1384,7 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
         environment.insert("PYTHONIOENCODING", "utf-8")
         environment.insert("PYTHONUNBUFFERED", "1")
         environment.insert("RGB_MOCAP_COMPUTE_MODE", self.compute_mode.currentData())
+        environment.insert('RGB_MOCAP_DEBUG_VIDEOS', '1' if self.debug_videos.isChecked() else '0')
         environment.insert('RGB_MOCAP_FLOW_INTERVAL',str(self.flow_sampling.currentData()))
         environment.insert('RGB_MOCAP_FLOW_FAST_SAM','1' if self.fast_sam.isChecked() else '0')
         environment.insert('RGB_MOCAP_EXMR_OPTIONS',json.dumps({'static_camera':self.exmr_camera.currentData(),'smoothing':'global' if self.exmr_smoothing.isChecked() else 'none'}))
@@ -1294,7 +1447,14 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
         if self.people_event(event):
             self._queued_task_estimates=[self.task_descriptor(s,a) for s,a in self.jobs]
             self.update_task_progress();return
-        if kind == "prepared":
+        if kind == 'gemx_corrected':
+            if self.project == Path(event['project']):
+                self.set_active_result('corrected_initial')
+        elif kind == 'gemx_ready':
+            self.workspace_root=Path(event['root'])
+            self.load_project(Path(event['project']))
+            self.set_active_result(event['result'])
+        elif kind == "prepared":
             self._task_preparing=False
             self._task_manifests={}
             self.project = Path(event["project"])
@@ -1553,7 +1713,7 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
             if needs_update(self.project):notices.append('FlowHMR scene placement needs updating. Use Prepare Preview; no AI inference is required.')
             knee_offset=max((fitted.get(side+'Leg',{}).get('max_m',0.) for side in ('Left','Right')),default=0.)
             if knee_offset>.08:notices.append(f'Knee pose differs from AI source (up to {knee_offset*100:.1f} cm) after anatomical alignment.')
-        self.bone_overlay.setToolTip(tooltip_text('Show the skeleton used for FBX export. Display only.\n'
+        self.bone_overlay.setToolTip(tooltip_text('Show the imported character skeleton, and the export skeleton while a person is visible. Display only.\n'
             'In Blender, use Scale 1 and leave Automatic Bone Orientation off to keep its axes.\n'+help_text))
         if available and pending:notices.append('Contact-lock timing changed. Preview shows the last applied correction. Apply Correction to update the motion and FBX.')
         if corrected and available and not pending and not result_is_current(self.project,self.active_result):notices.append('The last applied correction is outdated or unavailable. Apply Correction before export.')
@@ -1576,6 +1736,157 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
                 self.refresh_results()
                 return
             self.status.setText("Cannot load the motion preview. " + message)
+
+    def export_guii(self):
+        if self.busy or getattr(self, 'character_process', None) is not None:
+            self.status.setText('Wait for the current job to finish.')
+            return
+        proc = getattr(self, '_guii_proc', None)
+        if proc is not None and proc.state() != QProcess.NotRunning:
+            self.status.setText('A Guii export is already running.')
+            return
+        character, problem = self._guii_character()
+        if problem:
+            self.status.setText(problem)
+            return
+        if self.face_take is None:
+            self.status.setText('This project has no face capture yet.')
+            return
+        take = self._guii_body_take(character)
+        blend = self.character_path(character['animation'] + '/' + take['folder']) / 'animation.blend'
+        if not blend.is_file():
+            self.status.setText('The retarget has no animation. Retarget the character again.')
+            return
+        from .guii_bundle import blender_export_command, prepare_take, slug, takes_root
+        root = takes_root()
+        if root is None:
+            chosen = QFileDialog.getExistingDirectory(self, 'Choose the Guii takes folder')
+            if not chosen:
+                return
+            root = Path(chosen)
+        default = slug(self.project.name if self.project else 'take') or 'take'
+        name, accepted = QInputDialog.getText(
+            self, 'Export Guii Take',
+            'Take name. The holodrone plays it from ?take=this-name',
+            text=default)
+        if not accepted:
+            return
+        take_id = slug(name)
+        if not take_id:
+            self.status.setText('The take name needs a letter or number.')
+            return
+        dest = root / take_id
+        if dest.exists() and any(dest.iterdir()):
+            answer = QMessageBox.question(self, 'Export Guii Take', 'Replace the existing take "%s"?' % take_id)
+            if answer != QMessageBox.Yes:
+                return
+        audio = self._playback_audio() if hasattr(self, '_playback_audio') else None
+        offset = float((self.face_meta or {}).get('offset') or 0)
+        fps = float(take['fps'])
+        if fps <= 0:
+            self.status.setText('The retarget has no frame rate.')
+            return
+        body_duration = float(take['frames']) / fps
+        arranged, cleanup = self.arranged_audio() if hasattr(self, 'arranged_audio') else (audio, None)
+        try:
+            duration, has_audio = prepare_take(
+                dest, self.face_take, float(take['start']), fps, body_duration, arranged, offset)
+            command = blender_export_command(blend, dest / 'body.vrma')
+        except (OSError, RuntimeError, ValueError) as error:
+            self.status.setText(str(error))
+            return
+        finally:
+            if cleanup:
+                import shutil
+                shutil.rmtree(cleanup, ignore_errors=True)
+        timed = []
+        if has_audio and audio is not None:
+            from . import captions
+            from .face_capture import folder
+            face_root = self.face_root()
+            rows = captions.for_take(face_root, audio.relative_to(folder(face_root)).as_posix()).get('captions')
+            lead = float(take['start']) - offset
+            if self.slider.audio_is_edited():
+                rows = captions.retimed(rows, self.slider.audio_segments_seconds())
+            timed = captions.shifted(rows, lead, duration)
+        self._guii_job = dict(dest=dest, take_id=take_id, duration=duration, fps=fps, has_audio=has_audio, root=root,
+                              captions=timed)
+        exporter = QProcess(self)
+        exporter.setProcessChannelMode(QProcess.MergedChannels)
+        exporter.finished.connect(self._finish_guii_export)
+        self._guii_proc = exporter
+        self.status.setText('Exporting the retargeted body…')
+        exporter.start(command[0], command[1:])
+        if not exporter.waitForStarted(8000):
+            self.status.setText('Could not start Blender for the Guii export.')
+            self._guii_proc = None
+
+    def _guii_character(self):
+        chars = list(getattr(self, 'characters', []) or [])
+        ready = [c for c in chars if c.get('takes') and not c.get('needs_retarget')]
+        stale = [c for c in chars if c.get('takes') and c.get('needs_retarget')]
+        selected = self.selected_character() if hasattr(self, 'selected_character') else None
+        if selected is not None and selected in ready:
+            return selected, None
+        if selected is not None and selected in stale:
+            return None, 'Character motion is out of date. Retarget it, then export the Guii take.'
+        project = getattr(self, 'project', None)
+        matched = []
+        if project is not None:
+            base = Path(project).resolve()
+            for c in ready:
+                for body in c['takes']:
+                    src = Path(str(body.get('source') or ''))
+                    try:
+                        if src.resolve().is_relative_to(base):
+                            matched.append(c)
+                            break
+                    except (OSError, ValueError):
+                        continue
+        if len(matched) == 1:
+            return matched[0], None
+        if len(ready) == 1:
+            return ready[0], None
+        if stale and not ready:
+            return None, 'Character motion is out of date. Retarget it, then export the Guii take.'
+        if not ready:
+            return None, 'Retarget the VRM character first. FBX export is the source skeleton, so it does not include this character, the face, or the voice.'
+        return None, 'Select the character in the People list, then export the Guii take.'
+
+    def _guii_body_take(self, character):
+        takes = character['takes']
+        time_ = float(getattr(self.motion_view, 'scene_time', 0) or 0)
+        for body in takes:
+            start = float(body['start'])
+            end = start + float(body['frames']) / float(body['fps'])
+            if start - 1e-4 <= time_ < end:
+                return body
+        return takes[0]
+
+    def _finish_guii_export(self, code, _status):
+        job = getattr(self, '_guii_job', None)
+        proc = getattr(self, '_guii_proc', None)
+        output = ''
+        if proc is not None:
+            output = bytes(proc.readAllStandardOutput()).decode('utf-8', 'replace')
+        if job is None:
+            return
+        vrma = job['dest'] / 'body.vrma'
+        if code != 0 or not vrma.is_file():
+            tail = output.strip().splitlines()
+            self.log.append(output[-4000:])
+            self.status.setText('Guii body export failed. ' + (tail[-1] if tail else 'Blender exited.'))
+            return
+        from .guii_bundle import publish
+        try:
+            publish(job['dest'], job['take_id'], job['duration'], job['fps'], job['has_audio'], job.get('captions'))
+        except (OSError, RuntimeError, ValueError) as error:
+            self.status.setText(str(error))
+            return
+        voice = 'with the selected voice' if job['has_audio'] else 'without voice audio'
+        self.status.setText(
+            'Guii take "%s" is ready %s. Reload the game at https://localhost:5273/?take=%s'
+            % (job['take_id'], voice, job['take_id']))
 
     def save_fbx(self):
         if self.selected_character() is not None:
@@ -1645,10 +1956,19 @@ class MainWindow(SessionWorkspace,CharacterWorkspace,FaceWorkspace,ModelWorkspac
                 worker.waitForFinished(3000)
         if self.character_process is not None:
             self.cancel_character();self.character_process.waitForFinished(5000)
+        guii = getattr(self, '_guii_proc', None)
+        if guii is not None and guii.state() != QProcess.NotRunning:
+            guii.kill();guii.waitForFinished(2000)
         self.character_loader.close()
         self.task_timer.stop()
         if self.workspace_root is not None:
             try:self.remember_workspace_model()
             except (OSError,ValueError) as error:self.log.append('Could not save project view: '+str(error))
+        if hasattr(self, '_remember_key'):
+            self._remember_key()
+        if hasattr(self, 'remember_last_open'):
+            self.remember_last_open()
+        if hasattr(self, 'close_session'):
+            self.close_session()
         self.shutdown_preview()
         event.accept()

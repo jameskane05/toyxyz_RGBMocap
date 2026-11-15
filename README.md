@@ -71,6 +71,7 @@ and recovery.
 | [ExMR](https://github.com/twehrbein/ExMR) | SMPL-X | Included |
 | [FlowHMR](https://github.com/flowhmr/flowhmr) | SMPL-H | Included |
 | [GVHMR](https://github.com/zju3dv/GVHMR) | SMPL-X | Optional HandFlow add-on |
+| [GEM-X](https://github.com/NVlabs/GEM-X) | SOMA Native77 | Included. Optional `Setup_GEMX.cmd` after `install.cmd`. See [GEM-X](docs/models/GEMX.md). |
 
 Requires 64-bit Windows, a compatible NVIDIA GPU/driver and OpenGL 4.3.
 Model files are acquired separately; some require registration and license acceptance.

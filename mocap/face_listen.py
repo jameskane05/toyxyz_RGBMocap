@@ -12,6 +12,7 @@ from PySide6.QtCore import QThread, Signal
 from .face_capture import ARKIT_NAMES, canonicalize
 from .face_monitor import QuestMonitor
 from .phone_stream import VIDEO_PORT, PhoneStream
+from .phone_web import CAMERA_PAGE, _accept_value, serve_camera_socket
 
 DEFAULT_PORT = 8765
 
@@ -35,6 +36,7 @@ class FaceHub:
     def __init__(self):
         self.lock = Lock()
         self.recording = False
+        self.hold = False
         self.started = None
         self.frames = []
         self.latest = None
@@ -49,6 +51,12 @@ class FaceHub:
         self.preview = None
         self.preview_at = None
         self.preview_generation = 0
+        self.audio_source = ''
+        self.audio_track = None
+        self.monitor = ''
+        self.meter_peak = 0.0
+        self.meter_at = 0.0
+        self.expression_names = None
 
     def _arm(self):
         self.recording = True
@@ -56,13 +64,17 @@ class FaceHub:
         self.epoch = time.time()
         self.frames = []
         self.eye_frames = []
+        self.audio_source = ''
+        self.audio_track = None
         self.latest = None
         self.latest_eyes = None
         self.error = None
+        self.expression_names = None
 
     def start(self):
         with self.lock:
             self._arm()
+            self.hold = False
             self.received = None
             self.client = None
             self.arrivals = []
@@ -70,6 +82,65 @@ class FaceHub:
     def begin_take(self):
         with self.lock:
             self._arm()
+            self.hold = True
+
+    def set_audio_source(self, source):
+        with self.lock:
+            self.audio_source = source or ''
+
+    def set_monitor(self, source):
+        with self.lock:
+            self.monitor = source if source in ('phone', 'quest') else ''
+
+    def note_pcm(self, pcm):
+        usable = len(pcm) - (len(pcm) % 2) if pcm else 0
+        if usable < 2:
+            return
+        peak = 0
+        for index in range(0, usable, 2):
+            value = pcm[index] | (pcm[index + 1] << 8)
+            if value >= 32768:
+                value = 65536 - value
+            if value > peak:
+                peak = value
+        with self.lock:
+            self.meter_peak = peak / 32768.0
+            self.meter_at = time.monotonic()
+
+    def meter(self):
+        with self.lock:
+            return self.meter_peak, self.meter_at
+
+    def open_audio(self, track):
+        with self.lock:
+            self.audio_track = track
+            return track
+
+    def take_audio(self):
+        with self.lock:
+            track = self.audio_track
+            self.audio_track = None
+            source = self.audio_source
+            self.audio_source = ''
+            return track, source
+
+    def ingest_pcm(self, pts, rate, pcm):
+        with self.lock:
+            track = self.audio_track
+            epoch = self.epoch
+        if track is None:
+            return
+        try:
+            pts = float(pts)
+        except (TypeError, ValueError):
+            return
+        # The phone page clears its epoch between polls, so the first packets
+        # of a take arrive as wall-clock seconds. Put them on the take clock.
+        if pts > 1e8:
+            if not epoch:
+                return
+            pts -= float(epoch)
+        track.add(pts, rate, pcm)
 
     def take_frames(self):
         with self.lock:
@@ -78,9 +149,15 @@ class FaceHub:
             self.started = time.monotonic()
             return frames
 
+    def expression_list(self):
+        with self.lock:
+            names = self.expression_names
+            return list(names) if names else None
+
     def stop(self):
         with self.lock:
             self.recording = False
+            self.hold = False
             return list(self.frames)
 
     def ingest(self, payload, client=None):
@@ -95,27 +172,42 @@ class FaceHub:
         coeffs = (payload.get('coeffs') or payload.get('blendshapes')
                   or payload.get('blendShapes') or payload.get('coefficients'))
         row = [0.0]*len(ARKIT_NAMES)
-        if isinstance(values, list):
-            if names:
-                for name, value in zip(names, values):
-                    index = canonicalize(name)
-                    if index is not None:
-                        row[index] = max(row[index], float(value))
-            else:
-                for i, value in enumerate(values[:len(ARKIT_NAMES)]):
-                    row[i] = float(value)
-        elif isinstance(coeffs, dict):
-            for name, value in coeffs.items():
-                index = canonicalize(name)
+        named = None
+        if isinstance(values, list) and names:
+            named = []
+            for name, value in zip(names, values):
+                label = str(name)
+                if not label:
+                    continue
+                number = float(value)
+                named.append((label, number))
+                index = canonicalize(label)
                 if index is not None:
-                    row[index] = max(row[index], float(value))
+                    row[index] = max(row[index], number)
+        elif isinstance(values, list):
+            for i, value in enumerate(values[:len(ARKIT_NAMES)]):
+                row[i] = float(value)
+        elif isinstance(coeffs, dict):
+            named = []
+            for name, value in coeffs.items():
+                label = str(name)
+                if not label:
+                    continue
+                number = float(value)
+                named.append((label, number))
+                index = canonicalize(label)
+                if index is not None:
+                    row[index] = max(row[index], number)
         else:
             raise ValueError('Face frame needs values, names, or blendshapes.')
         with self.lock:
             t = payload.get('t')
             if t is None:
-                origin = self.started if self.started is not None else time.monotonic()
-                t = time.monotonic() - origin
+                if self.recording and self.epoch is not None:
+                    t = time.time() - self.epoch
+                else:
+                    origin = self.started if self.started is not None else time.monotonic()
+                    t = time.monotonic() - origin
             compact = [round(float(t), 4)] + [round(float(v), 4) for v in row]
             now = time.monotonic()
             self.latest = compact
@@ -131,7 +223,21 @@ class FaceHub:
                 if self.started is None:
                     self.started = now
                     self.epoch = time.time()
-                self.frames.append(compact)
+                # Named Meta frames keep their own columns. A bare ARKit list stays the
+                # compact row, and does not get mixed into a take that already has names.
+                named_take = bool(named) and not (self.frames and not self.expression_names)
+                if named_take:
+                    if self.expression_names is None:
+                        self.expression_names = []
+                    columns = self.expression_names
+                    bag = {label: number for label, number in named}
+                    for label in bag:
+                        if label not in columns and len(columns) < 128:
+                            columns.append(label)
+                    stored = [round(float(bag.get(label, 0.0)), 4) for label in columns]
+                    self.frames.append([compact[0], *stored])
+                elif not self.expression_names:
+                    self.frames.append(compact)
                 if eyes is not None:
                     self.eye_frames.append(dict(t=compact[0], eyes=eyes))
                 if len(self.frames) > 20000:
@@ -191,6 +297,9 @@ class FaceHub:
                         video_port=VIDEO_PORT,
                         accepting_video=bool(phone and phone.accepting()),
                         phone_connected=bool(phone and phone.connected()),
+                        camera_error=getattr(phone, 'error', None) if phone else None,
+                        audio=self.audio_source if self.recording else None,
+                        monitor=self.monitor,
                         eyes=_eye_summary(eyes))
 
 
@@ -248,7 +357,96 @@ function readFace(frame) {
   return null;
 }
 
-button.addEventListener('click', () => { enter(); });
+let micSocket = null;
+let micContext = null;
+let micSend = false;
+let micFailed = false;
+let micStarting = false;
+let micOffset = 0;
+let micEpoch = null;
+
+function micClockUs() {
+  const origin = micEpoch || 0;
+  return Math.max(0, Math.round((Date.now() / 1000 + micOffset - origin) * 1e6));
+}
+
+function sendQuestPcm(input, rate) {
+  if (!micSocket || micSocket.readyState !== WebSocket.OPEN || !input.length) return;
+  const pcm = new Int16Array(input.length);
+  for (let i = 0; i < input.length; i += 1) {
+    const sample = Math.max(-1, Math.min(1, input[i]));
+    pcm[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+  }
+  const body = new Uint8Array(4 + pcm.byteLength);
+  new DataView(body.buffer).setUint32(0, rate, false);
+  body.set(new Uint8Array(pcm.buffer), 4);
+  const header = new Uint8Array(10);
+  header[0] = 3;
+  new DataView(header.buffer).setBigUint64(1, BigInt(Math.max(0, micClockUs() - Math.round(input.length / rate * 1e6))), false);
+  const out = new Uint8Array(10 + body.length);
+  out.set(header, 0);
+  out.set(body, 10);
+  micSocket.send(out);
+}
+
+function ensureMicSocket() {
+  if (micSocket && (micSocket.readyState === WebSocket.OPEN || micSocket.readyState === WebSocket.CONNECTING)) return;
+  micSocket = new WebSocket(location.origin.replace(/^http/, 'ws') + '/mic-stream');
+  micSocket.binaryType = 'arraybuffer';
+  micSocket.onclose = () => { if (micSend) setTimeout(ensureMicSocket, 400); };
+}
+
+async function startQuestMic() {
+  if (micContext || micFailed || micStarting) return;
+  micStarting = true;
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 },
+      video: false
+    });
+  } catch (error) {
+    micFailed = true;
+    micStarting = false;
+    note.textContent = 'Quest microphone blocked. ' + (error && error.message ? error.message : error);
+    return;
+  }
+  const Context = window.AudioContext || window.webkitAudioContext;
+  if (!Context) { micStarting = false; return; }
+  micContext = new Context();
+  const source = micContext.createMediaStreamSource(stream);
+  const processor = micContext.createScriptProcessor(4096, 1, 1);
+  const mute = micContext.createGain();
+  mute.gain.value = 0;
+  processor.onaudioprocess = (event) => {
+    if (!micSend) return;
+    const buffer = event.inputBuffer;
+    sendQuestPcm(buffer.getChannelData(0), buffer.sampleRate || micContext.sampleRate || 48000);
+  };
+  source.connect(processor);
+  processor.connect(mute);
+  mute.connect(micContext.destination);
+  micContext.resume().catch(() => {});
+  ensureMicSocket();
+  micStarting = false;
+}
+
+async function pollMic() {
+  try {
+    const started = performance.now();
+    const response = await fetch('/status', { cache: 'no-store' });
+    const status = await response.json();
+    const rtt = (performance.now() - started) / 1000;
+    if (typeof status.server_time === 'number') micOffset = status.server_time - Date.now() / 1000 - rtt / 2;
+    if (status.epoch !== micEpoch) micEpoch = status.epoch;
+    micSend = status.monitor === 'quest' || (status.recording && status.audio === 'quest');
+    if (micSend) { startQuestMic(); ensureMicSocket(); }
+  } catch (error) {}
+  setTimeout(pollMic, 200);
+}
+pollMic();
+
+button.addEventListener('click', () => { micFailed = false; startQuestMic(); enter(); });
 
 async function enter() {
   if (!window.isSecureContext || !navigator.xr) {
@@ -371,6 +569,8 @@ def ensure_certificate(directory, hosts):
 
 def _handler(hub):
     class Handler(BaseHTTPRequestHandler):
+        protocol_version = 'HTTP/1.1'
+
         def log_message(self, *_):
             return
 
@@ -378,12 +578,33 @@ def _handler(hub):
             body = payload if isinstance(payload, (bytes, bytearray)) else json.dumps(payload).encode('utf-8')
             self.send_response(code)
             self.send_header('Content-Type', ctype)
+            self.send_header('Cache-Control', 'no-store')
             self.send_header('Access-Control-Allow-Origin', '*')
             self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
             self.send_header('Access-Control-Allow-Headers', 'Content-Type')
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def _accept_camera_socket(self, role):
+            key = self.headers.get('Sec-WebSocket-Key')
+            connection = (self.headers.get('Connection') or '').lower()
+            upgrade = (self.headers.get('Upgrade') or '').lower()
+            if not key or 'upgrade' not in connection or upgrade != 'websocket':
+                self._send(400, dict(error='Expected a camera websocket.'))
+                return
+            self.close_connection = False
+            self.send_response(101, 'Switching Protocols')
+            self.send_header('Upgrade', 'websocket')
+            self.send_header('Connection', 'Upgrade')
+            self.send_header('Sec-WebSocket-Accept', _accept_value(key))
+            self.end_headers()
+            self.close_connection = True
+            try:
+                client = self.client_address[0] if self.client_address else None
+                serve_camera_socket(self.rfile, self.wfile, hub, client, role)
+            except Exception:
+                return
 
         def do_OPTIONS(self):
             self._send(204, b'')
@@ -393,7 +614,23 @@ def _handler(hub):
             if path == '/status':
                 self._send(200, hub.status())
                 return
+            if path == '/camera':
+                self._send(200, CAMERA_PAGE.encode('utf-8'), 'text/html; charset=utf-8')
+                return
+            if path == '/camera-stream':
+                self._accept_camera_socket('iphone')
+                return
+            if path == '/mic-stream':
+                self._accept_camera_socket('quest')
+                return
             if path in ('/', '/frame', '/face'):
+                agent = self.headers.get('User-Agent') or ''
+                if 'iPhone' in agent or 'iPad' in agent:
+                    self.send_response(302)
+                    self.send_header('Location', '/camera')
+                    self.send_header('Cache-Control', 'no-store')
+                    self.end_headers()
+                    return
                 self._send(200, QUEST_PAGE.encode('utf-8'), 'text/html; charset=utf-8')
                 return
             self._send(404, dict(error='Not found'))
@@ -421,6 +658,7 @@ def _handler(hub):
                     with hub.lock:
                         hub.frames = []
                         hub.recording = True
+                        hub.expression_names = None
                     for row in frames:
                         if isinstance(row, dict):
                             hub.ingest(row)
@@ -432,7 +670,7 @@ def _handler(hub):
                               self.client_address[0] if self.client_address else None)
                     self._send(200, dict(ok=True))
                 elif path == '/start':
-                    hub.start()
+                    hub.begin_take()
                     self._send(200, dict(ok=True))
                 elif path == '/stop':
                     frames = hub.stop()

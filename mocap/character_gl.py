@@ -56,9 +56,10 @@ TEXTURE_FRAGMENT='''#version 430 core
 in vec3 n;in vec2 uv;out vec4 color;
 uniform sampler2D baseTexture;uniform bool hasTexture;uniform vec4 baseColor;
 void main(){vec4 c=hasTexture?texture(baseTexture,uv):baseColor;
-if(c.a<.1)discard;
+if(hasTexture)c.a*=baseColor.a;
+if(c.a<.02)discard;
 float light=.60+.35*max(0,dot(normalize(n),normalize(vec3(-.4,.8,-.6))));
-color=vec4(c.rgb*light,1);}'''
+color=vec4(c.rgb*light,c.a);}'''
 
 class CharacterRenderer(MeshRenderer):
     def __init__(self):
@@ -111,9 +112,11 @@ class CharacterRenderer(MeshRenderer):
         self.morph_count=len(self.morph_names)
         self.morph_weight=self.buffer(np.zeros(64,np.float32))
         if self.morph_count:
-            self.morph_rows=self.buffer(np.ascontiguousarray(asset['morph_rows'],np.uint32))
-            self.morph_ids=self.buffer(np.ascontiguousarray(asset['morph_ids'],np.int32))
-            self.morph_delta=self.buffer(np.ascontiguousarray(asset['morph_delta'],np.float32))
+            from .face_capture import collapse_repeated_morphs
+            rows,ids,deltas=collapse_repeated_morphs(asset['morph_rows'],asset['morph_ids'],asset['morph_delta'])
+            self.morph_rows=self.buffer(np.ascontiguousarray(rows,np.uint32))
+            self.morph_ids=self.buffer(np.ascontiguousarray(ids,np.int32))
+            self.morph_delta=self.buffer(np.ascontiguousarray(deltas,np.float32))
         self.asset_key=asset['key'];self.frame_key=None
         self.check('character load')
 
@@ -165,7 +168,10 @@ class CharacterRenderer(MeshRenderer):
         for flag in (0x0B90,0x0C11,0x0B44,0x0BE2):gl.glDisable(flag)
         if clear_depth:gl.glClear(0x100)
         self.vao.bind()
+        solid,glass=[],[]
         for batch in self.batches:
+            (glass if batch.get('blend') or len(batch['color'])>3 and batch['color'][3]<.99 else solid).append(batch)
+        def paint(batch):
             texture=self.textures.get(batch['image'])
             look=batch.get('look') or ()
             ex=ey=0.
@@ -178,6 +184,11 @@ class CharacterRenderer(MeshRenderer):
             shader.setUniformValue('baseColor',QVector4D(*batch['color']))
             if texture:texture.bind(0)
             gl.glDrawArrays(0x4,batch['start'],batch['count'])
+        for batch in solid:paint(batch)
+        if glass:
+            gl.glEnable(0x0BE2);gl.glBlendFunc(0x0302,0x0303);gl.glDepthMask(False)
+            for batch in glass:paint(batch)
+            gl.glDepthMask(True);gl.glDisable(0x0BE2)
         gl.glBindTexture(0x0DE1,0)
         self.vao.release();shader.release();gl.glDisable(0x0B71)
 

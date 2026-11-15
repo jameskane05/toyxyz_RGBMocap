@@ -16,4 +16,6 @@ This PC does not have the Android SDK, so the project has to be built on a machi
 
 ## iPhone
 
-Open `native/ios/RGBCapture.xcodeproj` on a Mac, sign the target, and run it on the phone. Point it at the same address. The back camera uses the largest format at up to 60 fps.
+Open `native/ios/RGBCapture.xcodeproj` on a Mac, sign the target, and run it on the phone. Point it at the same address. The back camera records portrait at its largest format, up to 60 fps. Record on the phone or in the RGB MoCap session panel.
+
+Safari can stream portrait 1080p without that app. Open the address at the top of the window on the iPhone.

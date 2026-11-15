@@ -107,6 +107,17 @@ def resource_error(stage,frames,available_ram,total_ram,free_vram=None,total_vra
     return None
 
 
+def gpu_memory_fraction(free, total):
+    if total <= 0:
+        return 0.
+    return max(0., min(1., (free - gpu_reserve(total)) / total))
+
+
+def effective_mode():
+    mode = os.environ.get('RGB_MOCAP_COMPUTE_MODE', 'auto')
+    return mode if mode in MODES else 'auto'
+
+
 def retry_cuda(operation,batch,on_retry,oom_type=None,cleanup=None):
     """Leave the exception scope before cleanup; traceback must not retain CUDA tensors."""
     if oom_type is None:

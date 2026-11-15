@@ -18,6 +18,9 @@ final class CaptureModel: NSObject, ObservableObject, URLSessionDelegate, AVCapt
     private var offset = 0.0
     private var previewBusy = false
     private var frameIndex = 0
+    private var encoderWidth = 0
+    private var encoderHeight = 0
+    private var rotation: VTPixelRotationSession?
     private lazy var http: URLSession = {
         URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
     }()
@@ -89,6 +92,9 @@ final class CaptureModel: NSObject, ObservableObject, URLSessionDelegate, AVCapt
         output.setSampleBufferDelegate(self, queue: queue)
         guard session.canAddOutput(output) else { return }
         session.addOutput(output)
+        if let connection = output.connection(with: .video), connection.isVideoOrientationSupported {
+            connection.videoOrientation = .portrait
+        }
         if let format = bestFormat(device) {
             try? device.lockForConfiguration()
             device.activeFormat = format.format
@@ -98,9 +104,7 @@ final class CaptureModel: NSObject, ObservableObject, URLSessionDelegate, AVCapt
         }
         session.commitConfiguration()
         session.startRunning()
-        let dimensions = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
-        DispatchQueue.main.async { self.status = "Camera \(dimensions.width)x\(dimensions.height)" }
-        makeEncoder(width: Int(dimensions.width), height: Int(dimensions.height))
+        DispatchQueue.main.async { self.status = "Camera starting in portrait." }
     }
 
     private func bestFormat(_ device: AVCaptureDevice) -> (format: AVCaptureDevice.Format, range: AVFrameRateRange)? {
@@ -119,6 +123,10 @@ final class CaptureModel: NSObject, ObservableObject, URLSessionDelegate, AVCapt
     }
 
     private func makeEncoder(width: Int, height: Int) {
+        if let existing = compression {
+            VTCompressionSessionInvalidate(existing)
+            compression = nil
+        }
         var session: VTCompressionSession?
         VTCompressionSessionCreate(allocator: nil, width: Int32(width), height: Int32(height),
                                    codecType: kCMVideoCodecType_HEVC, encoderSpecification: nil,
@@ -131,19 +139,51 @@ final class CaptureModel: NSObject, ObservableObject, URLSessionDelegate, AVCapt
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_HEVC_Main_AutoLevel)
         VTCompressionSessionPrepareToEncodeFrames(session)
         compression = session
+        encoderWidth = width
+        encoderHeight = height
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        guard let raw = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let image = upright(raw)
+        let width = CVPixelBufferGetWidth(image)
+        let height = CVPixelBufferGetHeight(image)
+        if compression == nil || encoderWidth != width || encoderHeight != height {
+            makeEncoder(width: width, height: height)
+            DispatchQueue.main.async { self.status = "Camera \(width)x\(height)" }
+        }
         frameIndex += 1
-        if frameIndex % 3 == 0 { sendPreview(sampleBuffer) }
-        guard let session = compression, let image = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        if frameIndex % 3 == 0 { sendPreview(image) }
+        guard let session = compression else { return }
         let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         VTCompressionSessionEncodeFrame(session, imageBuffer: image, presentationTimeStamp: time, duration: .invalid,
                                         frameProperties: nil, sourceFrameRefcon: nil, infoFlagsOut: nil)
     }
 
-    private func sendPreview(_ sample: CMSampleBuffer) {
-        guard !previewBusy, let buffer = CMSampleBufferGetImageBuffer(sample) else { return }
+    private func upright(_ buffer: CVPixelBuffer) -> CVPixelBuffer {
+        let width = CVPixelBufferGetWidth(buffer)
+        let height = CVPixelBufferGetHeight(buffer)
+        if height >= width { return buffer }
+        if rotation == nil {
+            var session: VTPixelRotationSession?
+            if VTPixelRotationSessionCreate(allocator: nil, pixelRotationSessionOut: &session) == noErr, let session {
+                VTSessionSetProperty(session, key: kVTPixelRotationPropertyKey_Rotation, value: kVTRotation_CW90)
+                rotation = session
+            }
+        }
+        guard let rotation else { return buffer }
+        var destination: CVPixelBuffer?
+        let attrs = [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary
+        guard CVPixelBufferCreate(nil, height, width, CVPixelBufferGetPixelFormatType(buffer), attrs, &destination) == kCVReturnSuccess,
+              let destination,
+              VTPixelRotationSessionRotateImage(rotation, sourceBuffer: buffer, destinationBuffer: destination) == noErr else {
+            return buffer
+        }
+        return destination
+    }
+
+    private func sendPreview(_ buffer: CVPixelBuffer) {
+        guard !previewBusy else { return }
         previewBusy = true
         let image = CIImage(cvPixelBuffer: buffer)
         let scale = min(1, 960 / image.extent.width)
@@ -300,6 +340,13 @@ final class PreviewView: UIView {
         super.init(frame: .zero)
         (layer as? AVCaptureVideoPreviewLayer)?.session = session
         (layer as? AVCaptureVideoPreviewLayer)?.videoGravity = .resizeAspect
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if let connection = (layer as? AVCaptureVideoPreviewLayer)?.connection, connection.isVideoOrientationSupported {
+            connection.videoOrientation = .portrait
+        }
     }
     required init?(coder: NSCoder) { fatalError() }
 }

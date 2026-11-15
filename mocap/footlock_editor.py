@@ -8,6 +8,8 @@ CONTACT_COLORS=(*FOOT_COLORS,"#79a9db","#bf8dcf")
 
 
 class FootLockEditor:
+    contact_row0 = 4
+
     def init_contacts(self):
         self.contacts=[[],[]];self.automatic_contacts=[[],[]]
         self.contacts_available=False;self.contact_edit_enabled=False
@@ -62,7 +64,7 @@ class FootLockEditor:
 
     def _contact_row(self,event):
         position=event.position() if hasattr(event,'position') else event.pos()
-        row=int((position.y()-28)//self.TRACK_HEIGHT)-2
+        row=int((position.y()-28)//self.TRACK_HEIGHT)-self.contact_row0
         return row if 0<=row<len(self.contacts) and self.contact_track_enabled[row] else None
 
     def _edge_position(self,event):
@@ -213,13 +215,13 @@ class FootLockEditor:
 
     def _contact_rect(self,foot,interval):
         s,e=interval;left=max(self.LEFT,self.frame_x(s));right=min(self.width()-self.RIGHT,self.frame_x(e-1))
-        return QRectF(left,28+(foot+2)*self.TRACK_HEIGHT+2,max(2,right-left),self.TRACK_HEIGHT-5)
+        return QRectF(left,28+(foot+self.contact_row0)*self.TRACK_HEIGHT+2,max(2,right-left),self.TRACK_HEIGHT-5)
 
     def paint_contact_tracks(self,p):
         self.contact_draw_queries=0
         if not getattr(self,'contacts_supported',True):return
         for foot,(label,color) in enumerate(zip(('L foot','R foot','L hand','R hand'),CONTACT_COLORS)):
-            y=28+(foot+2)*self.TRACK_HEIGHT
+            y=28+(foot+self.contact_row0)*self.TRACK_HEIGHT
             p.setPen(QColor('#aaaaaa'));p.drawText(QRectF(8,y,53,self.TRACK_HEIGHT),Qt.AlignVCenter,label)
             if not self.contact_track_enabled[foot]:
                 p.setPen(QColor('#777777'));p.drawText(QRectF(self.LEFT+8,y,max(0,self.width()-self.LEFT-25),self.TRACK_HEIGHT),Qt.AlignVCenter,'Disabled');continue

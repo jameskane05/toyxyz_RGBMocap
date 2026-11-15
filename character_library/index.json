@@ -1,0 +1,16 @@
+[
+  {
+    "id": "66e92b2216e04a8ca30bdfa9cc80c4c9",
+    "name": "Agent",
+    "kind": "vrm",
+    "voice_id": "TfGtrgcVrXWjJkeB51T1",
+    "voice_name": "French Darling - For Stories & Audiobooks "
+  },
+  {
+    "id": "d00efd747adb48909a774e0704de8576",
+    "name": "Boss",
+    "kind": "vrm",
+    "voice_id": "8TMmdpPgqHKvDOGYP2lN",
+    "voice_name": "Gregory Grumble - Old lovable bedtime bear. "
+  }
+]

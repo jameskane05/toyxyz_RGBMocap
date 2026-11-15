@@ -319,7 +319,10 @@ def run_stage(project,stage,result,emit,force=False):
     if not static:activate()
     atomic_json(pending,dict(stage=stage,started=time.time()))
     if stage=='flow_camera':output=camera(project,emit,force=force)
-    elif stage=='flow_features':output=features(project,emit)
+    elif stage=='flow_features':
+        from .debug_video import record_flow_keypoints
+        with record_flow_keypoints(project):
+            output=features(project,emit)
     elif stage=='flowhmr':
         output=infer(project,emit)
         from .flow_placement import ensure

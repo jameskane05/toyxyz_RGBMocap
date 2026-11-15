@@ -10,7 +10,17 @@ import numpy as np
 
 from .retarget.file_paths import io_path
 
-CACHE = 'preview-textures-v2'
+CACHE = 'preview-textures-v3'
+
+
+def uses_alpha_coverage(pixels):
+    """True when the visible texels are a soft mask, as with eyelash strands."""
+    alpha = pixels[..., 3]
+    visible = alpha > 10
+    count = int(visible.sum())
+    if count < 16:
+        return False
+    return int((alpha[visible] < 250).sum()) * 2 > count
 
 
 def load(source, asset, cancelled):
@@ -81,6 +91,8 @@ def load(source, asset, cancelled):
         end += batch['count']
     if end != len(corners):
         raise ValueError('Incomplete character texture triangles')
+    coverage = {key for key, pixels in images.items() if uses_alpha_coverage(pixels)}
+    batches = [dict(batch, blend=True) if batch.get('image') in coverage else batch for batch in meta['batches']]
     eyes = None
     eye_path = folder / 'eyes.json'
     if eye_path.is_file() and eye_path.stat().st_size < 4096:
@@ -88,7 +100,7 @@ def load(source, asset, cancelled):
         if (isinstance(loaded, dict) and isinstance(loaded.get('left'), int)
                 and isinstance(loaded.get('right'), int)):
             eyes = dict(left=loaded['left'], right=loaded['right'])
-    return dict(key=str(source), corners=corners, images=images, batches=meta['batches'],
+    return dict(key=str(source), corners=corners, images=images, batches=batches,
                 metadata=meta, bytes=total, eyes=eyes)
 
 

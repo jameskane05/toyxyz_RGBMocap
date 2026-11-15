@@ -37,9 +37,13 @@ def main():
     app.setWindowIcon(QIcon(str(Path(__file__).resolve().parent / "assets" / "rgbmocap-icon.png")))
     configure_application(app)
     window = MainWindow(args.video)
+    smoke = bool(args.smoke_screenshot or args.smoke_run_analysis or args.smoke_playback_seconds)
+    window._suppress_last_open = smoke
     window.bone_overlay.setChecked(args.smoke_bone_overlay=='on' if args.smoke_bone_overlay else args.smoke_render_mode!='raw')
     if args.project:
         window.load_project(args.project)
+    elif not args.video and not smoke:
+        window.restore_last_open()
     window.show()
     if args.smoke_camera_distance is not None:
         window.motion_view.auto_fit = False

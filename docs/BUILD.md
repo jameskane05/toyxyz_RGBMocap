@@ -87,6 +87,11 @@ Custom bone mapping and hair/clothing simulation are not implemented.
 Use Model Manager for weights, SMPL-X/SMPL-H/MANO and gated supporting models.
 Registration and license acceptance remain the user's responsibility.
 
+Optional GEM-X uses `Setup_GEMX.cmd`, the ExMR CPython base, and its own pinned
+Windows packages. The installer checks CUDA before publishing the environment.
+See [GEM-X](models/GEMX.md) before changing the lock or the native preview,
+retarget, and FBX paths. `install.cmd` and `update.cmd` leave it optional.
+
 Some upstream auxiliary regressors, mean-pose and mapping arrays are also kept
 out of Git. Exact paths and hashes are in `installer/external-assets.json`.
 Obtain the matching public auxiliary files from the pinned upstream repositories,

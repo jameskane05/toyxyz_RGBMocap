@@ -12,6 +12,7 @@ QLabel#status { color:#b8b8b8; padding:3px 6px; }
 QLabel#faceUrl, QLineEdit#faceUrl { color:#d5c7a6; font-weight:600; background:#3a3428; border:1px solid #5a4f3a; }
 QLabel#faceLiveTitle { color:#f0e6cc; font-weight:600; }
 QFrame#faceLive { background:rgba(28,28,28,230); border:1px solid #4a4334; border-radius:4px; }
+QFrame#faceLive QPushButton { padding:1px 4px; }
 QLabel#taskInfo { color:#b9d9ff; padding:3px 6px; }
 QFrame#editor { background:#303030; border:1px solid #191919; }
 QWidget#editorHeader { background:#292929; border-bottom:1px solid #191919; }
@@ -46,8 +47,24 @@ QMenu::item { padding:5px 22px; }
 QSplitter::handle { background:#202020; }
 QScrollArea { background:#303030; border:0; }
 QWidget#modelSidebar,QStackedWidget#modelPages,QWidget[motion_tool],
-QWidget#modelSettingsViewport,QFrame#modelActions { background:#303030; }
+QWidget#modelSettingsViewport,QFrame#modelActions,QTabWidget#settingsTabs { background:#303030; }
 QWidget#modelSidebar QGroupBox { background:#303030; }
+QTabWidget#settingsTabs::pane { border:0; background:#303030; }
+QTabBar::tab { background:#3a3a3a; color:#c8c8c8; padding:7px 18px; margin-right:2px; border:1px solid #191919; }
+QTabBar::tab:hover { background:#4a4a4a; }
+QTabBar::tab:selected { background:#477bb7; color:white; font-weight:600; }
+QListWidget#characterLibrary { background:#242424; border:1px solid #181818; }
+QListWidget#characterLibrary::item { padding:5px 8px; }
+QListWidget#characterLibrary::item:selected { background:#477bb7; color:white; }
+QListWidget#audioTakes { background:#242424; border:1px solid #181818; }
+QListWidget#audioTakes::item { padding:6px 8px; }
+QListWidget#audioTakes::item:selected { background:#477bb7; color:white; }
+QListWidget#curveChannels { background:#242424; border:0; border-right:1px solid #191919; }
+QListWidget#curveChannels::item { padding:3px 4px; }
+QListWidget#curveChannels::item:selected { background:#477bb7; color:white; }
+QListWidget#curveChannels::indicator { width:14px; height:14px; border:1px solid #949494; border-radius:2px; background:#303030; }
+QListWidget#curveChannels::indicator:checked { border-color:#c7ddf6; background:#477bb7; image:url("CHECK_ICON"); }
+QPushButton#timelineTab:checked { background:#477bb7; border-color:#37689d; color:white; font-weight:600; }
 QScrollBar:vertical { width:9px; background:#292929; }
 QScrollBar::handle:vertical { background:#555555; border-radius:3px; min-height:25px; }
 QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical { height:0; }

@@ -18,6 +18,7 @@ This guide is for agents helping users operate or modify RGB MoCap. It describes
 | ExMR | Default; generally fast, good quality in the project's subjective tests. SMPL-X. | Fingers included; static/moving camera and smoothing options. |
 | FlowHMR | Slower; best overall quality in those tests, not a universal ranking. SMPL-H. | Fingers included; Fast SAM and camera/sampling choices. Moving camera needs VGGT-Omega. |
 | GVHMR | Lower overall quality in those tests but sometimes better for unusual poses such as backflips. SMPL-X. | Fingers via optional HandFlow. HTD refines body motion; FootMR refines ankles. Both are separate from contact correction. |
+| GEM-X | Optional. Fixed camera, one person, up to 60 seconds. Native SOMA, no SMPL. Run `Setup_GEMX.cmd` after `install.cmd`. See [GEM-X](models/GEMX.md). | Fingers included. Correction and FBX use the 77-joint result. |
 
 The [model guide](USER_GUIDE.md#choose-a-model) includes observed timings, conditions and VRAM; these are historical measurements, not minimum specifications. FlowHMR has a 5,000-frame per-take limit and available memory may require less. Do not change numerical precision, temporal context or model settings merely to improve a benchmark.
 
@@ -27,7 +28,7 @@ Model files are in `<installation>/models/` by default. To reuse a legitimate in
 
 ## Standard GUI workflow
 
-1. **File > Open Video**, optionally trim the Video track; select an AI Motion Model and prepare its models. New work defaults to ExMR.
+1. **File > Open Video**, optionally trim the Video track. The Audio track can select, delete, move, or cut sound without changing the motion. Select an AI Motion Model and prepare its models. New work defaults to ExMR.
 2. For multiple people, use **Find person** and check the desired rows; without it, automatic tracking selects one person and can switch identity on overlap. A checked row controls processing/visibility; the selected row controls the current timeline and contact edits.
 3. Choose camera and processing settings, then **Reconstruct 3D**. Processing runs on a 30 fps working clip, without changing the original video. Progress and cancellation are in the app. **Prepare Preview** rebuilds previews from existing motion without rerunning inference.
 4. Review motion and contacts. **Enable Correction** selects corrected output; Foot defaults on and Hand off for new work. Flat Ground uses a common floor; Multi Level retains inferred contact heights and does not reconstruct terrain. Inspect automatic contacts; hand contacts represent support, not hanging/object tracking.

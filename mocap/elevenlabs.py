@@ -1,4 +1,4 @@
-"""ElevenLabs speech-to-speech, matching the face-mocap audio sidebar."""
+"""ElevenLabs speech-to-speech and speech-to-text, matching the face-mocap audio sidebar."""
 from pathlib import Path
 import json
 import uuid
@@ -7,6 +7,7 @@ import urllib.error
 
 VOICES_URL = 'https://api.elevenlabs.io/v1/voices'
 MODELS_URL = 'https://api.elevenlabs.io/v1/models'
+SPEECH_TO_TEXT_URL = 'https://api.elevenlabs.io/v1/speech-to-text'
 
 
 def _request(url, key, data=None, content_type=None):
@@ -44,13 +45,13 @@ def fetch_models(key):
     return sorted(models, key=lambda row: row['name'].lower())
 
 
-def _multipart(fields, filename, payload, mime):
+def _multipart(fields, filename, payload, mime, file_field='audio'):
     boundary = 'RGBMoCap' + uuid.uuid4().hex
     chunks = []
     for name, value in fields.items():
         chunks.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode('utf-8'))
     chunks.append(
-        f'--{boundary}\r\nContent-Disposition: form-data; name="audio"; filename="{filename}"\r\n'
+        f'--{boundary}\r\nContent-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'
         f'Content-Type: {mime}\r\n\r\n'.encode('utf-8'))
     chunks.append(payload)
     chunks.append(f'\r\n--{boundary}--\r\n'.encode('utf-8'))
@@ -81,3 +82,20 @@ def convert(key, voice_id, audio_path, options=None):
     ctype, payload = _request(url, key, body, content_type)
     suffix = '.wav' if 'wav' in ctype or str(options.get('output_format', '')).startswith('pcm') else '.mp3'
     return payload, suffix
+
+
+def transcribe(key, audio_path, model_id='scribe_v2'):
+    """Speech to text with per-word start and end seconds on the audio file's clock."""
+    audio_path = Path(audio_path)
+    mime = 'audio/wav' if audio_path.suffix.lower() == '.wav' else 'application/octet-stream'
+    body, content_type = _multipart({'model_id': model_id or 'scribe_v2', 'timestamps_granularity': 'word'},
+                                    audio_path.name, audio_path.read_bytes(), mime, file_field='file')
+    _ctype, payload = _request(SPEECH_TO_TEXT_URL, key, body, content_type)
+    data = json.loads(payload.decode('utf-8'))
+    chunk = data['transcripts'][0] if isinstance(data.get('transcripts'), list) and data['transcripts'] else data
+    text = chunk.get('text') if isinstance(chunk.get('text'), str) else ''
+    words = [w for w in chunk.get('words') or [] if isinstance(w, dict)]
+    spoken = [w for w in words if str(w.get('type') or 'word').strip() in ('word', '')]
+    if any(not isinstance(w.get('start'), (int, float)) or not isinstance(w.get('end'), (int, float)) for w in spoken):
+        raise ValueError('Speech to text returned words without start and end times.')
+    return text, words

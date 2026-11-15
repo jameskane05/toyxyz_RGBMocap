@@ -6,8 +6,10 @@ take epoch published by /status. Frames are wrapped in MPEG-TS so ffmpeg can
 remux them without re-encoding.
 """
 from pathlib import Path
+import queue
 import socket
 import struct
+import subprocess
 import threading
 import time
 
@@ -111,6 +113,136 @@ class TsMuxer:
         return self._packets(0x0100, self._pes(annexb, pts90), True)
 
 
+def _aud_positions(data):
+    positions = []
+    index = 0
+    limit = len(data)
+    while index + 3 < limit:
+        if index + 4 < limit and data[index:index + 4] == b'\x00\x00\x00\x01':
+            type_at = index + 4
+        elif data[index:index + 3] == b'\x00\x00\x01':
+            type_at = index + 3
+        else:
+            index += 1
+            continue
+        if type_at >= limit:
+            break
+        if (data[type_at] & 0x1F) == 9:
+            positions.append(index)
+        index = type_at + 1
+    return positions
+
+
+def pop_access_units(buffer):
+    """Split a byte stream on H.264 access-unit delimiters, keeping the last partial unit."""
+    data = bytes(buffer)
+    positions = _aud_positions(data)
+    if len(positions) < 2:
+        return [], bytearray(data)
+    units = [data[start:end] for start, end in zip(positions, positions[1:])]
+    return units, bytearray(data[positions[-1]:])
+
+
+class JpegEncoder:
+    """Turn browser JPEGs into H.264 access units for the transport stream."""
+
+    def __init__(self, emit):
+        from .video import executable
+        self.emit = emit
+        self.lock = threading.Lock()
+        self.closed = False
+        self.pending = queue.Queue()
+        self.note = ''
+        command = [executable('ffmpeg'), '-hide_banner', '-loglevel', 'error',
+                   '-f', 'image2pipe', '-c:v', 'mjpeg', '-i', 'pipe:0',
+                   '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency',
+                   '-pix_fmt', 'yuv420p', '-bf', '0', '-g', '30', '-crf', '20',
+                   '-x264-params', 'aud=1:repeat-headers=1',
+                   '-f', 'h264', 'pipe:1']
+        self.proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, creationflags=0x08000000)
+        self.thread = threading.Thread(target=self._read, daemon=True)
+        self.thread.start()
+        threading.Thread(target=self._stderr, daemon=True).start()
+
+    def push(self, pts, jpeg):
+        with self.lock:
+            if self.closed or self.proc.stdin is None:
+                return False
+            stdin = self.proc.stdin
+            self.pending.put(pts)
+        try:
+            stdin.write(jpeg)
+            stdin.flush()
+        except (OSError, ValueError):
+            self._drop_pending()
+            return False
+        return True
+
+    def finish(self):
+        with self.lock:
+            if self.closed:
+                return
+            self.closed = True
+            stdin = self.proc.stdin
+            self.proc.stdin = None
+        if stdin is not None:
+            try:
+                stdin.close()
+            except OSError:
+                pass
+        self.thread.join(8)
+        if self.proc.poll() is None:
+            self.proc.kill()
+            try:
+                self.proc.wait(2)
+            except subprocess.TimeoutExpired:
+                pass
+        if self.thread.is_alive():
+            self.thread.join(2)
+
+    def _drop_pending(self):
+        try:
+            self.pending.get_nowait()
+        except queue.Empty:
+            pass
+
+    def _stderr(self):
+        try:
+            data = self.proc.stderr.read() if self.proc.stderr is not None else b''
+        except OSError:
+            return
+        if data:
+            self.note = data.decode('utf-8', 'replace')[-300:]
+
+    def _emit_unit(self, unit):
+        try:
+            pts = self.pending.get_nowait()
+        except queue.Empty:
+            return
+        self.emit(2, 0, pts, unit)
+
+    def _read(self):
+        buffer = bytearray()
+        try:
+            while True:
+                chunk = self.proc.stdout.read(65536)
+                if not chunk:
+                    break
+                buffer += chunk
+                if len(buffer) > 8 * 1024 * 1024:
+                    self.note = 'Camera encoder fell behind.'
+                    buffer = buffer[-1024 * 1024:]
+                units, buffer = pop_access_units(buffer)
+                for unit in units:
+                    self._emit_unit(unit)
+            positions = _aud_positions(buffer)
+            if len(positions) == 1 and len(buffer) > positions[0] + 6:
+                self._emit_unit(bytes(buffer[positions[0]:]))
+        except OSError as exc:
+            self.note = str(exc)
+
+
 class PhoneStream(threading.Thread):
     def __init__(self, port=VIDEO_PORT):
         super().__init__(daemon=True)
@@ -127,6 +259,9 @@ class PhoneStream(threading.Thread):
         self.frames = 0
         self.first_pts = None
         self.bytes_written = 0
+        self.error = None
+        self._encoder = None
+        self._closing = False
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server.bind(('0.0.0.0', self.port))
@@ -138,11 +273,14 @@ class PhoneStream(threading.Thread):
             return self._file is not None
 
     def open_take(self, path):
+        self._finish_encoder()
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         handle = path.open('wb')
         with self.lock:
             self._close_file()
+            self.error = None
+            self._closing = False
             self._file = handle
             self._muxer = None
             self._codec = None
@@ -152,10 +290,43 @@ class PhoneStream(threading.Thread):
         return path
 
     def close_take(self):
+        self._finish_encoder()
         with self.lock:
             frames, first = self.frames, self.first_pts
             self._close_file()
+            self._closing = False
             return frames, first
+
+    def ingest_access_unit(self, codec, flags, pts, payload):
+        self._write(codec, flags, pts, payload)
+
+    def ingest_jpeg(self, pts, payload):
+        if len(payload) < 4 or payload[:2] != b'\xff\xd8':
+            return
+        with self.lock:
+            if self._closing or self._file is None:
+                return
+            if self._encoder is None:
+                try:
+                    self._encoder = JpegEncoder(self._write)
+                except (OSError, RuntimeError) as exc:
+                    self.error = str(exc)
+                    return
+            encoder = self._encoder
+        if not encoder.push(pts, payload):
+            with self.lock:
+                if self._file is not None and not self._closing and not self.error:
+                    self.error = encoder.note or 'Camera encoder stopped.'
+
+    def _finish_encoder(self):
+        with self.lock:
+            self._closing = True
+            encoder = self._encoder
+            self._encoder = None
+        if encoder is not None:
+            encoder.finish()
+            if encoder.note and self.frames == 0 and not self.error:
+                self.error = encoder.note
 
     def _close_file(self):
         if self._file is not None:
